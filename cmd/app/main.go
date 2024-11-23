@@ -32,7 +32,6 @@ func main() {
 		}
 	}()
 
-	// Set environment variables for Elastic APM
 	os.Setenv("ELASTIC_APM_SERVER_URL", cfg.ElasticAPMServerURL)
 	os.Setenv("ELASTIC_APM_SERVICE_NAME", cfg.ElasticAPMServiceName)
 	os.Setenv("ELASTIC_APM_ENVIRONMENT", cfg.ElasticAPMEnvironment)
@@ -55,6 +54,7 @@ func main() {
 	}
 
 	routes.UserRoutes(app)
+	routes.AuthRoutes(app)
 
 	port := ":4000"
 	logger.Logger.Infof("Server is running on port %s", port)
