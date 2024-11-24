@@ -1,14 +1,15 @@
 package main
 
 import (
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	fiberLogger "github.com/gofiber/fiber/v2/middleware/logger"
-	apmfiber "go.elastic.co/apm/module/apmfiber/v2"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	fiberLogger "github.com/gofiber/fiber/v2/middleware/logger"
+	apmfiber "go.elastic.co/apm/module/apmfiber/v2"
 
 	"tedalogger-backend/config"
 	"tedalogger-backend/db"

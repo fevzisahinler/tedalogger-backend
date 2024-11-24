@@ -1,11 +1,7 @@
 package requests
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"github.com/go-playground/validator/v10"
-
-	"tedalogger-backend/models"
 )
 
 type CreateUserRequest struct {
@@ -20,23 +16,6 @@ type CreateUserRequest struct {
 func (u *CreateUserRequest) Validate() error {
 	validate := validator.New()
 	return validate.Struct(u)
-}
-
-func HashPassword(password string) string {
-	hash := sha256.New()
-	hash.Write([]byte(password))
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
-func (u *CreateUserRequest) ToModel() *models.User {
-	return &models.User{
-		Username:    u.Username,
-		Password:    HashPassword(u.Password),
-		Name:        u.Name,
-		Surname:     u.Surname,
-		Email:       u.Email,
-		PhoneNumber: u.PhoneNumber,
-	}
 }
 
 type UpdateUserRequest struct {
