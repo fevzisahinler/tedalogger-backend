@@ -5,13 +5,14 @@ import (
 )
 
 type User struct {
-	ID          uint   `gorm:"column:user_id;primaryKey"`
-	Username    string `gorm:"unique;not null"`
-	Password    string `gorm:"not null"`
-	FullName    string
-	Email       string `gorm:"unique"`
-	PhoneNumber string
-	CreatedAt   time.Time `gorm:"default:current_timestamp"`
-	UpdatedAt   time.Time
-	Roles       []Role `gorm:"many2many:user_roles;"`
+	ID          uint      `gorm:"column:id;primaryKey"`
+	Username    string    `gorm:"unique;not null"`
+	Password    string    `gorm:"not null"`
+	Name        string    `gorm:"not null"`
+	Surname     string    `gorm:"not null"`
+	Email       string    `gorm:"unique;not null"`
+	PhoneNumber string    `gorm:"not null"`
+	CreatedAt   time.Time `gorm:"autoCreateTime"`
+	UpdatedAt   time.Time `gorm:"autoUpdateTime"`
+	Roles       []Role    `gorm:"many2many:user_roles;"`
 }
