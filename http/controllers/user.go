@@ -164,32 +164,30 @@ func GetCurrentUser(c *fiber.Ctx) error {
 	if !ok {
 		logger.Logger.Error("Failed to cast user claims to jwt.MapClaims")
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
-			"error": "Unauthorized: Invalid token claims",
+			"message": "Unauthorized: Invalid token claims",
 		})
 	}
 
 	idFloat, ok := claims["id"].(float64)
 	if !ok {
-		logger.Logger.Error("Failed to parse 'id' from token claims")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": "Invalid token structure",
+		logger.Logger.Error("Invalid token claims: 'id' field is missing or invalid")
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{
+			"message": "Invalid token claims structure",
 		})
 	}
 
 	userID := uint(idFloat)
-
 	var user models.User
 	if err := db.DB.First(&user, userID).Error; err != nil {
-		logger.Logger.WithError(err).Error("Kullanıcı bulunamadı")
+		logger.Logger.WithError(err).Error("User not found")
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
-			"error": "Kullanıcı bulunamadı",
+			"message": "User not found",
 		})
 	}
 
-	logger.Logger.WithField("user", user).Info("User successfully fetched")
-
+	logger.Logger.WithField("user", user).Info("User fetched successfully")
 	return c.JSON(fiber.Map{
-		"message": "Kullanıcı başarıyla getirildi",
+		"message": "User fetched successfully",
 		"data":    user,
 	})
 }
