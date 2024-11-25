@@ -1,14 +1,15 @@
 package main
 
 import (
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	fiberLogger "github.com/gofiber/fiber/v2/middleware/logger"
-	apmfiber "go.elastic.co/apm/module/apmfiber/v2"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v2/middleware/cors"
+	fiberLogger "github.com/gofiber/fiber/v2/middleware/logger"
+	apmfiber "go.elastic.co/apm/module/apmfiber/v2"
 
 	"tedalogger-backend/config"
 	"tedalogger-backend/db"
@@ -46,7 +47,7 @@ func main() {
 
 	app.Use(fiberLogger.New(fiberLogger.Config{
 		Format:     "${ip} - - [${time}] \"${method} ${path} ${protocol}\" ${status} ${latency}\n",
-		TimeFormat: "02/Jan/2006:15:04:05 -0700",
+		TimeFormat: "02/Jan/2024:15:04:05 -0700",
 	}))
 
 	if err := db.ConnectDatabase(cfg); err != nil {

@@ -1,8 +1,7 @@
 package controllers
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
+	"tedalogger-backend/providers/cryptology"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -10,6 +9,7 @@ import (
 
 	"tedalogger-backend/config"
 	"tedalogger-backend/db"
+	"tedalogger-backend/http/responses"
 	"tedalogger-backend/logger"
 	"tedalogger-backend/models"
 )
@@ -23,18 +23,27 @@ func Login(c *fiber.Ctx) error {
 	loginReq := new(LoginRequest)
 	if err := c.BodyParser(loginReq); err != nil {
 		logger.Logger.WithError(err).Error("Failed to parse login request")
-		return fiber.NewError(fiber.StatusBadRequest, "Invalid input")
+		return c.Status(fiber.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid input",
+		})
 	}
 
 	var user models.User
 	if err := db.DB.Where("username = ?", loginReq.Username).First(&user).Error; err != nil {
 		logger.Logger.WithError(err).Error("User not found")
-		return fiber.NewError(fiber.StatusUnauthorized, "Invalid credentials")
+		return c.Status(fiber.StatusUnauthorized).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid credentials",
+		})
 	}
 
-	if user.Password != HashPassword(loginReq.Password) {
+	if err := cryptology.CheckPasswordHash(loginReq.Password, user.Password); err != nil {
 		logger.Logger.Error("Invalid password")
-		return fiber.NewError(fiber.StatusUnauthorized, "Invalid credentials")
+		return c.Status(fiber.StatusUnauthorized).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid credentials",
+		})
 	}
 
 	cfg, _ := config.LoadConfig()
@@ -47,16 +56,15 @@ func Login(c *fiber.Ctx) error {
 	tokenString, err := token.SignedString([]byte(cfg.JwtSecretKey))
 	if err != nil {
 		logger.Logger.WithError(err).Error("Failed to generate token")
-		return fiber.NewError(fiber.StatusInternalServerError, "Could not login")
+		return c.Status(fiber.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not login",
+		})
 	}
 
-	return c.JSON(fiber.Map{
-		"token": tokenString,
+	return c.JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "Login successful",
+		Data:    fiber.Map{"token": tokenString},
 	})
-}
-
-func HashPassword(password string) string {
-	hash := sha256.New()
-	hash.Write([]byte(password))
-	return hex.EncodeToString(hash.Sum(nil))
 }
