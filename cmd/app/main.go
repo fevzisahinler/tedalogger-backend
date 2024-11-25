@@ -47,7 +47,7 @@ func main() {
 
 	app.Use(fiberLogger.New(fiberLogger.Config{
 		Format:     "${ip} - - [${time}] \"${method} ${path} ${protocol}\" ${status} ${latency}\n",
-		TimeFormat: "02/Jan/2006:15:04:05 -0700",
+		TimeFormat: "02/Jan/2024:15:04:05 -0700",
 	}))
 
 	if err := db.ConnectDatabase(cfg); err != nil {

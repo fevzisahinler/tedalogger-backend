@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"tedalogger-backend/providers/cryptology"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -11,7 +12,6 @@ import (
 	"tedalogger-backend/http/responses"
 	"tedalogger-backend/logger"
 	"tedalogger-backend/models"
-	"tedalogger-backend/utils"
 )
 
 func Login(c *fiber.Ctx) error {
@@ -38,7 +38,7 @@ func Login(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := utils.CheckPasswordHash(loginReq.Password, user.Password); err != nil {
+	if err := cryptology.CheckPasswordHash(loginReq.Password, user.Password); err != nil {
 		logger.Logger.Error("Invalid password")
 		return c.Status(fiber.StatusUnauthorized).JSON(responses.ErrorResponse{
 			Error:   true,

@@ -2,18 +2,17 @@ package controllers
 
 import (
 	"errors"
-	"strconv"
-
 	"github.com/gofiber/fiber/v2"
 	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/gorm"
+	"strconv"
 
 	"tedalogger-backend/db"
 	"tedalogger-backend/http/requests"
 	"tedalogger-backend/http/responses"
 	"tedalogger-backend/logger"
 	"tedalogger-backend/models"
-	"tedalogger-backend/utils"
+	"tedalogger-backend/providers/cryptology"
 )
 
 func Register(c *fiber.Ctx) error {
@@ -51,7 +50,7 @@ func Register(c *fiber.Ctx) error {
 		})
 	}
 
-	hashedPassword, err := utils.HashPassword(requestUser.Password)
+	hashedPassword, err := cryptology.HashPassword(requestUser.Password)
 	if err != nil {
 		logger.Logger.WithError(err).Error("Failed to hash password")
 		return c.Status(fiber.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -123,7 +122,7 @@ func EditUser(c *fiber.Ctx) error {
 
 	user.Username = updateUserRequest.Username
 	if updateUserRequest.Password != "" {
-		hashedPassword, err := utils.HashPassword(updateUserRequest.Password)
+		hashedPassword, err := cryptology.HashPassword(updateUserRequest.Password)
 		if err != nil {
 			logger.Logger.WithError(err).Error("Failed to hash password")
 			return c.Status(fiber.StatusInternalServerError).JSON(responses.ErrorResponse{
