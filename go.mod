@@ -1,6 +1,6 @@
 module tedalogger-backend
 
-go 1.22.9
+go 1.23.3
 
 require (
 	github.com/go-playground/validator/v10 v10.23.0
