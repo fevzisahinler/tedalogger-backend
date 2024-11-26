@@ -38,9 +38,9 @@ func ConnectDatabase(cfg *config.Config) error {
 	sqlDB.SetMaxOpenConns(100)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
-	//if err := AutoMigrate(database); err != nil {
-	//	return err
-	//}
+	if err := AutoMigrate(database); err != nil {
+		return err
+	}
 
 	logger.Logger.Info("Database connected successfully")
 	DB = database
