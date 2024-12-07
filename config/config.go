@@ -17,6 +17,12 @@ type Config struct {
 	ElasticAPMServerURL   string
 	ElasticAPMServiceName string
 	ElasticAPMEnvironment string
+
+	RadiusDBHost     string
+	RadiusDBUser     string
+	RadiusDBPassword string
+	RadiusDBName     string
+	RadiusDBPort     string
 }
 
 func LoadConfig() (*Config, error) {
@@ -34,6 +40,12 @@ func LoadConfig() (*Config, error) {
 		ElasticAPMServerURL:   os.Getenv("ELASTIC_APM_SERVER_URL"),
 		ElasticAPMServiceName: os.Getenv("ELASTIC_APM_SERVICE_NAME"),
 		ElasticAPMEnvironment: os.Getenv("ELASTIC_APM_ENVIRONMENT"),
+
+		RadiusDBHost:     os.Getenv("RADIUS_DB_HOST"),
+		RadiusDBUser:     os.Getenv("RADIUS_DB_USER"),
+		RadiusDBPassword: os.Getenv("RADIUS_DB_PASSWORD"),
+		RadiusDBName:     os.Getenv("RADIUS_DB_NAME"),
+		RadiusDBPort:     os.Getenv("RADIUS_DB_PORT"),
 	}
 
 	return config, nil

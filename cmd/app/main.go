@@ -42,7 +42,6 @@ func main() {
 	})
 
 	app.Use(cors.New())
-
 	app.Use(apmfiber.Middleware())
 
 	app.Use(fiberLogger.New(fiberLogger.Config{
@@ -50,12 +49,20 @@ func main() {
 		TimeFormat: "02/Jan/2024:15:04:05 -0700",
 	}))
 
+	// PostgreSQL Bağlantısı
 	if err := db.ConnectDatabase(cfg); err != nil {
 		logger.Logger.WithError(err).Fatal("Database connection failed")
 	}
 
+	// Radius DB Bağlantısı
+	if err := db.ConnectRadiusDB(cfg); err != nil {
+		logger.Logger.WithError(err).Fatal("Radius database connection failed")
+	}
+
+	// Route'lar
 	routes.UserRoutes(app)
 	routes.AuthRoutes(app)
+	routes.NASRoutes(app)
 
 	port := ":4000"
 	logger.Logger.Infof("Server is running on port %s", port)
