@@ -42,11 +42,11 @@ func CreateNAS(c *fiber.Ctx) error {
 		Server:            req.Server,
 		Community:         req.Community,
 		Description:       req.Description,
-		SMTPEnabled:       req.SMTPEnabled,
+		SNMPEnabled:       req.SNMPEnabled,
 		Syslog5651Enabled: req.Syslog5651Enabled,
 	}
 
-	// PostgreSQL'e ekle
+	// Insert into PostgreSQL
 	if err := db.DB.Create(&nas).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to insert NAS into PostgreSQL")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -55,14 +55,14 @@ func CreateNAS(c *fiber.Ctx) error {
 		})
 	}
 
-	// Radius DB'ye ekle (ports kolonu kullanılıyor)
+	// Insert into Radius DB (ports column in radius)
 	if err := db.RadiusDB.Exec(
-		`INSERT INTO nas (nasname, shortname, type, ports, secret, server, community, description) 
+		`INSERT INTO nas (nasname, shortname, type, ports, secret, server, community, description)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		nas.Nasname, nas.Shortname, nas.Type, nas.Port, nas.Secret, nas.Server, nas.Community, nas.Description,
 	).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to insert NAS into Radius DB")
-		// Eğer radius DB insert başarısız olursa, Postgres'ten geri sil
+		// Rollback in PostgreSQL if Radius insert fails
 		db.DB.Delete(&nas)
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
 			Error:   true,
@@ -128,7 +128,7 @@ func UpdateNAS(c *fiber.Ctx) error {
 	nas.Server = req.Server
 	nas.Community = req.Community
 	nas.Description = req.Description
-	nas.SMTPEnabled = req.SMTPEnabled
+	nas.SNMPEnabled = req.SNMPEnabled
 	nas.Syslog5651Enabled = req.Syslog5651Enabled
 
 	if err := db.DB.Save(&nas).Error; err != nil {
@@ -139,7 +139,7 @@ func UpdateNAS(c *fiber.Ctx) error {
 		})
 	}
 
-	// Radius DB update (ports kolonu kullanılıyor)
+	// Update in Radius DB
 	if err := db.RadiusDB.Exec(
 		`UPDATE nas SET nasname=?, shortname=?, type=?, ports=?, secret=?, server=?, community=?, description=? 
 		 WHERE nasname=?`,
@@ -193,7 +193,7 @@ func DeleteNAS(c *fiber.Ctx) error {
 
 	if err := db.RadiusDB.Exec(`DELETE FROM nas WHERE nasname=?`, nas.Nasname).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to delete NAS from Radius DB")
-		// Basitlik açısından rollback işlemini atlıyoruz.
+		// For simplicity, skipping rollback here.
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
 			Error:   true,
 			Message: "Could not delete NAS in radius",

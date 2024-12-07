@@ -13,7 +13,7 @@ type CreateOrUpdateNASRequest struct {
 	Server            string `json:"server"`
 	Community         string `json:"community"`
 	Description       string `json:"description"`
-	SMTPEnabled       bool   `json:"smtp_enabled"`
+	SNMPEnabled       bool   `json:"snmp_enabled"`
 	Syslog5651Enabled bool   `json:"syslog_5651_enabled"`
 }
 
