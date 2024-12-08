@@ -10,7 +10,7 @@ func RadiusGroupRoutes(app *fiber.App) {
 	radgroup := app.Group("radgroup", middleware.JWTMiddleware())
 
 	radgroup.Post("/create", controllers.CreateRadiusGroup)
-	radgroup.Put("/update", controllers.UpdateRadiusGroup)
-	radgroup.Delete("/delete", controllers.DeleteNAS)
-	radgroup.Get("/get_all", controllers.GetAllNAS)
+	radgroup.Put("/update/:id", controllers.UpdateRadiusGroup)
+	radgroup.Delete("/delete/:id", controllers.DeleteRadiusGroup)
+	radgroup.Get("/get_all", controllers.GetAllRadiusGroup)
 }

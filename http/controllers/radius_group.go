@@ -41,17 +41,80 @@ func CreateRadiusGroup(c *fiber.Ctx) error {
 		Description:           req.Description,
 	}
 
-	if err := db.DB.Create(&radgroup).Error; err != nil {
-		logger.Logger.WithError(err).Error("Failed to insert NAS into PostgreSQL")
+	// Begin transaction on PostgreSQL
+	tx := db.DB.Begin()
+	if err := tx.Create(&radgroup).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to insert Radius Group into PostgreSQL")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
 			Error:   true,
-			Message: "Could not create NAS",
+			Message: "Could not create Radius Group",
 		})
 	}
 
+	if err := db.RadiusDB.Exec("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (?, 'Simultaneous-Use', ':=', ?)",
+		radgroup.RadiusGroupName, radgroup.SimultaneousUse).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to insert Simultaneous-Use into Radius radgroupcheck")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not create Radius Group in radius (radgroupcheck)",
+		})
+	}
+
+	if radgroup.TimeOfDayRestrictions != "" {
+		if err := db.RadiusDB.Exec("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (?, 'Login-Time', ':=', ?)",
+			radgroup.RadiusGroupName, radgroup.TimeOfDayRestrictions).Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to insert Login-Time into Radius radgroupcheck")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not create Radius Group in radius (radgroupcheck)",
+			})
+		}
+	}
+
+	if radgroup.SessionTimeout > 0 {
+		if err := db.RadiusDB.Exec("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (?, 'Session-Timeout', ':=', ?)",
+			radgroup.RadiusGroupName, radgroup.SessionTimeout).Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to insert Session-Timeout into Radius radgroupreply")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not create Radius Group in radius (radgroupreply)",
+			})
+		}
+	}
+
+	if radgroup.IdleTimeout > 0 {
+		if err := db.RadiusDB.Exec("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (?, 'Idle-Timeout', ':=', ?)",
+			radgroup.RadiusGroupName, radgroup.IdleTimeout).Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to insert Idle-Timeout into Radius radgroupreply")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not create Radius Group in radius (radgroupreply)",
+			})
+		}
+	}
+
+	if radgroup.Bandwidth != "" {
+		if err := db.RadiusDB.Exec("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (?, 'Mikrotik-Rate-Limit', ':=', ?)",
+			radgroup.RadiusGroupName, radgroup.Bandwidth).Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to insert Bandwidth into Radius radgroupreply")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not create Radius Group in radius (radgroupreply)",
+			})
+		}
+	}
+
+	tx.Commit()
+
 	return c.Status(http.StatusCreated).JSON(responses.SuccessResponse{
 		Error:   false,
-		Message: "NAS created successfully",
+		Message: "Radius Group created successfully",
 		Data:    radgroup,
 	})
 }
@@ -97,27 +160,107 @@ func UpdateRadiusGroup(c *fiber.Ctx) error {
 		})
 	}
 
-	//oldRadiusGroupName := radiusGroup.RadiusGroupName
+	oldRadiusGroupName := radiusGroup.RadiusGroupName
 
 	radiusGroup.RadiusGroupName = req.RadiusGroupName
 	radiusGroup.SessionTimeout = req.SessionTimeout
-	radiusGroup.IdleTimeout = req.SessionTimeout
+	radiusGroup.IdleTimeout = req.IdleTimeout
 	radiusGroup.SimultaneousUse = req.SimultaneousUse
 	radiusGroup.Bandwidth = req.Bandwidth
 	radiusGroup.TimeOfDayRestrictions = req.TimeOfDayRestrictions
 	radiusGroup.Description = req.Description
 
-	if err := db.DB.Save(&radiusGroup).Error; err != nil {
-		logger.Logger.WithError(err).Error("Failed to update NAS in PostgreSQL")
+	tx := db.DB.Begin()
+	if err := tx.Save(&radiusGroup).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to update Radius Group in PostgreSQL")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
 			Error:   true,
 			Message: "Could not update Radius Group",
 		})
 	}
 
+	if err := db.RadiusDB.Exec("DELETE FROM radgroupcheck WHERE groupname=?", oldRadiusGroupName).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to delete old radgroupcheck entries in Radius DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not update Radius Group in radius",
+		})
+	}
+
+	if err := db.RadiusDB.Exec("DELETE FROM radgroupreply WHERE groupname=?", oldRadiusGroupName).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to delete old radgroupreply entries in Radius DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not update Radius Group in radius",
+		})
+	}
+
+	if err := db.RadiusDB.Exec("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (?, 'Simultaneous-Use', ':=', ?)",
+		radiusGroup.RadiusGroupName, radiusGroup.SimultaneousUse).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to insert Simultaneous-Use into Radius radgroupcheck on update")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not update Radius Group in radius (radgroupcheck)",
+		})
+	}
+
+	if radiusGroup.TimeOfDayRestrictions != "" {
+		if err := db.RadiusDB.Exec("INSERT INTO radgroupcheck (groupname, attribute, op, value) VALUES (?, 'Login-Time', ':=', ?)",
+			radiusGroup.RadiusGroupName, radiusGroup.TimeOfDayRestrictions).Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to insert Login-Time into Radius radgroupcheck on update")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not update Radius Group in radius (radgroupcheck)",
+			})
+		}
+	}
+
+	if radiusGroup.SessionTimeout > 0 {
+		if err := db.RadiusDB.Exec("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (?, 'Session-Timeout', ':=', ?)",
+			radiusGroup.RadiusGroupName, radiusGroup.SessionTimeout).Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to insert Session-Timeout into Radius radgroupreply on update")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not update Radius Group in radius (radgroupreply)",
+			})
+		}
+	}
+
+	if radiusGroup.IdleTimeout > 0 {
+		if err := db.RadiusDB.Exec("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (?, 'Idle-Timeout', ':=', ?)",
+			radiusGroup.RadiusGroupName, radiusGroup.IdleTimeout).Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to insert Idle-Timeout into Radius radgroupreply on update")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not update Radius Group in radius (radgroupreply)",
+			})
+		}
+	}
+
+	if radiusGroup.Bandwidth != "" {
+		if err := db.RadiusDB.Exec("INSERT INTO radgroupreply (groupname, attribute, op, value) VALUES (?, 'Mikrotik-Rate-Limit', ':=', ?)",
+			radiusGroup.RadiusGroupName, radiusGroup.Bandwidth).Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to insert Bandwidth into Radius radgroupreply on update")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not update Radius Group in radius (radgroupreply)",
+			})
+		}
+	}
+
+	tx.Commit()
+
 	return c.JSON(responses.SuccessResponse{
 		Error:   false,
-		Message: "NAS updated successfully",
+		Message: "Radius Group updated successfully",
 		Data:    radiusGroup,
 	})
 }
@@ -163,7 +306,9 @@ func DeleteRadiusGroup(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := db.DB.Delete(&radiusGroup).Error; err != nil {
+	tx := db.DB.Begin()
+	if err := tx.Delete(&radiusGroup).Error; err != nil {
+		tx.Rollback()
 		logger.Logger.WithError(err).Error("Failed to delete Radius Group from PostgreSQL")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
 			Error:   true,
@@ -171,9 +316,28 @@ func DeleteRadiusGroup(c *fiber.Ctx) error {
 		})
 	}
 
+	if err := db.RadiusDB.Exec("DELETE FROM radgroupcheck WHERE groupname=?", radiusGroup.RadiusGroupName).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to delete Radius Group from radgroupcheck in Radius DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not delete Radius Group in radius",
+		})
+	}
+
+	if err := db.RadiusDB.Exec("DELETE FROM radgroupreply WHERE groupname=?", radiusGroup.RadiusGroupName).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to delete Radius Group from radgroupreply in Radius DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not delete Radius Group in radius",
+		})
+	}
+
+	tx.Commit()
+
 	return c.JSON(responses.SuccessResponse{
 		Error:   false,
 		Message: "Radius Group deleted successfully",
 	})
-
 }
