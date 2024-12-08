@@ -48,7 +48,7 @@ func ConnectDatabase(cfg *config.Config) error {
 }
 
 func AutoMigrate(database *gorm.DB) error {
-	if err := database.AutoMigrate(&models.User{}, &models.Role{}, &models.Resource{}, &models.Permission{}, &models.NAS{}, &models.RadGroup{}, &models.Portal{}); err != nil {
+	if err := database.AutoMigrate(&models.User{}, &models.Role{}, &models.Resource{}, &models.Permission{}, &models.NAS{}, &models.RadGroup{}, &models.Portal{}, &models.LogDestination{}, &models.SignSettings{}); err != nil {
 		logger.Logger.WithError(err).Error("Failed to migrate models")
 		return err
 	}
