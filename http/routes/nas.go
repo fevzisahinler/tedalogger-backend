@@ -7,10 +7,10 @@ import (
 )
 
 func NASRoutes(app *fiber.App) {
-	admin := app.Group("admin", middleware.JWTMiddleware())
+	admin := app.Group("nas", middleware.JWTMiddleware())
 
-	admin.Post("/nas", controllers.CreateNAS)
-	admin.Put("/nas/:id", controllers.UpdateNAS)
-	admin.Delete("/nas/:id", controllers.DeleteNAS)
-	admin.Get("/nas", controllers.GetAllNAS)
+	admin.Post("/create", controllers.CreateNAS)
+	admin.Put("/update/:id", controllers.UpdateNAS)
+	admin.Delete("/delete/:id", controllers.DeleteNAS)
+	admin.Get("/get_all", controllers.GetAllNAS)
 }
