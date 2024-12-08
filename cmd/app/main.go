@@ -65,6 +65,8 @@ func main() {
 	routes.NASRoutes(app)
 	routes.RadiusGroupRoutes(app)
 	routes.PortalRoutes(app)
+	routes.LogDestinationRoutes(app)
+	routes.SignSettingsRoutes(app)
 
 	port := ":4000"
 	logger.Logger.Infof("Server is running on port %s", port)
