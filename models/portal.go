@@ -1,3 +1,5 @@
+// models/portal.go
+
 package models
 
 import (
@@ -17,6 +19,7 @@ type Portal struct {
 	Theme            datatypes.JSON `json:"theme"`            // JSON format
 	Logo             string         `json:"logo,omitempty"`
 	Background       string         `json:"background,omitempty"`
+	OtpEnabled       bool           `gorm:"default:false" json:"otpEnabled"` // Yeni alan eklendi
 	CreatedAt        time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt        time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 }
