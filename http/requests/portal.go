@@ -1,3 +1,5 @@
+// http/requests/portal.go
+
 package requests
 
 import (
@@ -17,6 +19,7 @@ type ComponentRequest struct {
 	FontSize       string   `json:"fontSize"`
 	ButtonText     string   `json:"buttonText"`
 	OtpPlaceholder string   `json:"otpPlaceholder"`
+	TermsContent   string   `json:"termsContent,omitempty"` // Yeni alan eklendi
 }
 
 type ThemeRequest struct {
@@ -38,6 +41,7 @@ type CreateOrUpdatePortalRequest struct {
 	Theme            ThemeRequest       `json:"theme" validate:"required"`
 	Logo             string             `json:"logo"`
 	Background       string             `json:"background"`
+	OtpEnabled       bool               `json:"otpEnabled"` // Yeni alan eklendi
 }
 
 func (r *CreateOrUpdatePortalRequest) Validate() error {

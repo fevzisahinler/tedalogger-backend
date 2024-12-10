@@ -1,3 +1,5 @@
+// http/controllers/portal.go
+
 package controllers
 
 import (
@@ -70,6 +72,7 @@ func CreatePortal(c *fiber.Ctx) error {
 		Theme:            themeJSON,
 		Logo:             req.Logo,
 		Background:       req.Background,
+		OtpEnabled:       req.OtpEnabled,
 	}
 
 	if err := db.DB.Create(&portal).Error; err != nil {
@@ -165,6 +168,7 @@ func UpdatePortal(c *fiber.Ctx) error {
 	portal.Theme = themeJSON
 	portal.Logo = req.Logo
 	portal.Background = req.Background
+	portal.OtpEnabled = req.OtpEnabled // Yeni alan güncellendi
 
 	if err := db.DB.Save(&portal).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to update Portal in PostgreSQL")

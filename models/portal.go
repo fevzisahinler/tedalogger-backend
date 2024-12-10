@@ -1,3 +1,5 @@
+// models/portal.go
+
 package models
 
 import (
@@ -17,23 +19,24 @@ type Portal struct {
 	Theme            datatypes.JSON `json:"theme"`            // JSON format
 	Logo             string         `json:"logo,omitempty"`
 	Background       string         `json:"background,omitempty"`
+	OtpEnabled       bool           `gorm:"default:false" json:"otpEnabled"` // Yeni alan eklendi
 	CreatedAt        time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt        time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
 type PortalComponent struct {
-	ID             string   `json:"id"` // UUID
-	Type           string   `json:"type"`
-	Label          string   `json:"label"`
-	Placeholder    string   `json:"placeholder,omitempty"`
-	Required       bool     `json:"required"`
-	IsVisible      bool     `json:"isVisible"`
-	Options        []string `json:"options,omitempty"`
-	DefaultValue   string   `json:"defaultValue,omitempty"`
-	FontFamily     string   `json:"fontFamily,omitempty"`
-	FontSize       string   `json:"fontSize,omitempty"`
-	ButtonText     string   `json:"buttonText,omitempty"`
-	OtpPlaceholder string   `json:"otpPlaceholder,omitempty"`
+	ID           string   `json:"id"` // UUID
+	Type         string   `json:"type"`
+	Label        string   `json:"label"`
+	Placeholder  string   `json:"placeholder,omitempty"`
+	Required     bool     `json:"required"`
+	IsVisible    bool     `json:"isVisible"`
+	Options      []string `json:"options,omitempty"`
+	DefaultValue string   `json:"defaultValue,omitempty"`
+	FontFamily   string   `json:"fontFamily,omitempty"`
+	FontSize     string   `json:"fontSize,omitempty"`
+	ButtonText   string   `json:"buttonText,omitempty"`
+	TermsContent string   `json:"termsContent,omitempty"`
 }
 
 type Theme struct {
