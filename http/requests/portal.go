@@ -19,6 +19,7 @@ type ComponentRequest struct {
 	FontSize       string   `json:"fontSize"`
 	ButtonText     string   `json:"buttonText"`
 	OtpPlaceholder string   `json:"otpPlaceholder"`
+	TermsContent   string   `json:"termsContent,omitempty"` // Yeni alan eklendi
 }
 
 type ThemeRequest struct {

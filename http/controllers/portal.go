@@ -72,7 +72,7 @@ func CreatePortal(c *fiber.Ctx) error {
 		Theme:            themeJSON,
 		Logo:             req.Logo,
 		Background:       req.Background,
-		OtpEnabled:       req.OtpEnabled, // Yeni alan eklendi
+		OtpEnabled:       req.OtpEnabled,
 	}
 
 	if err := db.DB.Create(&portal).Error; err != nil {

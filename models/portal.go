@@ -25,18 +25,18 @@ type Portal struct {
 }
 
 type PortalComponent struct {
-	ID             string   `json:"id"` // UUID
-	Type           string   `json:"type"`
-	Label          string   `json:"label"`
-	Placeholder    string   `json:"placeholder,omitempty"`
-	Required       bool     `json:"required"`
-	IsVisible      bool     `json:"isVisible"`
-	Options        []string `json:"options,omitempty"`
-	DefaultValue   string   `json:"defaultValue,omitempty"`
-	FontFamily     string   `json:"fontFamily,omitempty"`
-	FontSize       string   `json:"fontSize,omitempty"`
-	ButtonText     string   `json:"buttonText,omitempty"`
-	OtpPlaceholder string   `json:"otpPlaceholder,omitempty"`
+	ID           string   `json:"id"` // UUID
+	Type         string   `json:"type"`
+	Label        string   `json:"label"`
+	Placeholder  string   `json:"placeholder,omitempty"`
+	Required     bool     `json:"required"`
+	IsVisible    bool     `json:"isVisible"`
+	Options      []string `json:"options,omitempty"`
+	DefaultValue string   `json:"defaultValue,omitempty"`
+	FontFamily   string   `json:"fontFamily,omitempty"`
+	FontSize     string   `json:"fontSize,omitempty"`
+	ButtonText   string   `json:"buttonText,omitempty"`
+	TermsContent string   `json:"termsContent,omitempty"`
 }
 
 type Theme struct {
