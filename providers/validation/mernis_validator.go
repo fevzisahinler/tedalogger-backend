@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 )
 
 type Envelope struct {
@@ -48,6 +49,14 @@ type TCKimlikNoDogrulaResponse struct {
 }
 
 func ValidateIdentity(tcKimlikNo, ad, soyad string, dogumYili int) (bool, error) {
+	valid, err := ValidateTCKN(tcKimlikNo)
+	if err != nil {
+		return false, err
+	}
+	if !valid {
+		return false, errors.New("Invalid TCKN")
+	}
+
 	logFile, err := os.OpenFile("kimlik_dogrulama.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return false, errors.New("log dosyası oluşturulamadı: " + err.Error())
@@ -105,7 +114,6 @@ func ValidateIdentity(tcKimlikNo, ad, soyad string, dogumYili int) (bool, error)
 		return false, err
 	}
 
-	// Doğrulama sonucunu dön
 	if responseEnvelope.Body.TCKimlikNoDogrulaResponse.TCKimlikNoDogrulaResult {
 		log.Println("Kimlik doğrulama başarılı.")
 		return true, nil
@@ -113,4 +121,36 @@ func ValidateIdentity(tcKimlikNo, ad, soyad string, dogumYili int) (bool, error)
 
 	log.Println("Kimlik doğrulama başarısız.")
 	return false, nil
+}
+
+func ValidateTCKN(tckn string) (bool, error) {
+	if len(tckn) != 11 {
+		return false, errors.New("TCKN must be 11 digits")
+	}
+
+	// Check if all characters are digits
+	for _, c := range tckn {
+		if c < '0' || c > '9' {
+			return false, errors.New("TCKN must contain only digits")
+		}
+	}
+
+	// Convert TCKN to integers
+	var digits [11]int
+	for i, c := range tckn {
+		digit, _ := strconv.Atoi(string(c))
+		digits[i] = digit
+	}
+
+	// TCKN validation algorithm
+	sumOdd := digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
+	sumEven := digits[1] + digits[3] + digits[5] + digits[7]
+	check1 := ((sumOdd * 7) - sumEven) % 10
+	check2 := (sumOdd + sumEven + digits[9]) % 10
+
+	if check1 != digits[9] || check2 != digits[10] {
+		return false, errors.New("Invalid TCKN checksum")
+	}
+
+	return true, nil
 }

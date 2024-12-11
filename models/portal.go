@@ -11,7 +11,7 @@ import (
 type Portal struct {
 	ID               uint           `gorm:"primaryKey" json:"id"`
 	PortalID         string         `gorm:"uniqueIndex;not null" json:"portalID"`
-	Name             string         `gorm:"not null" json:"name"`
+	Name             string         `gorm:"not null;unique" json:"name"`
 	RadiusGroupName  string         `json:"radiusGroupName"`
 	NasName          string         `json:"nasName"`
 	LoginComponents  datatypes.JSON `json:"loginComponents"`  // JSON format
@@ -19,7 +19,7 @@ type Portal struct {
 	Theme            datatypes.JSON `json:"theme"`            // JSON format
 	Logo             string         `json:"logo,omitempty"`
 	Background       string         `json:"background,omitempty"`
-	OtpEnabled       bool           `gorm:"default:false" json:"otpEnabled"` // Yeni alan eklendi
+	OtpEnabled       bool           `gorm:"default:false" json:"otpEnabled"`
 	CreatedAt        time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt        time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 }
