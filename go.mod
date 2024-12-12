@@ -67,4 +67,5 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gorm.io/driver/postgres v1.5.10 // indirect
 	howett.net/plist v0.0.0-20181124034731-591f970eefbb // indirect
+	layeh.com/radius v0.0.0-20231213012653-1006025d24f8 // indirect
 )
