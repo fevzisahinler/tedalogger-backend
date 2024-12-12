@@ -13,4 +13,5 @@ func CaptiveUserRoutes(app *fiber.App) {
 	captiveUser.Post("/register", controllers.RegisterCaptiveUser)
 	captiveUser.Post("/verify_otp", controllers.VerifyOTP)
 	captiveUser.Post("/login", controllers.LoginCaptiveUser)
+	captiveUser.Post("verify_login_otp", controllers.VerifyLoginOTP)
 }
