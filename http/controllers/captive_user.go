@@ -795,3 +795,104 @@ func VerifyOTP(c *fiber.Ctx) error {
 		Data:    map[string]interface{}{"user_id": user.ID},
 	})
 }
+
+func VerifyLoginOTP(c *fiber.Ctx) error {
+	var req requests.VerifyOTPRequest
+	if err := c.BodyParser(&req); err != nil {
+		logger.Logger.WithError(err).Error("Failed to parse Verify OTP request")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid input",
+		})
+	}
+
+	if req.UserID == 0 || strings.TrimSpace(req.OTP) == "" {
+		logger.Logger.Error("Missing user_id or OTP in Verify OTP request")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "User ID and OTP are required",
+		})
+	}
+
+	var user models.CaptiveUser
+	if err := db.DB.Where("id = ?", req.UserID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "User not found",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to find CaptiveUser in database")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	logger.Logger.Infof("Verifying Login OTP for user ID: %d", user.ID)
+
+	var portal models.Portal
+	if err := db.DB.Where("portal_id = ?", user.PortalID).First(&portal).Error; err != nil {
+		logger.Logger.WithError(err).Error("Failed to find Portal for CaptiveUser")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	if !portal.OtpEnabled {
+		logger.Logger.Warnf("OTP verification attempted for portal without OTP enabled: %s", portal.PortalID)
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "OTP verification is not enabled for this portal",
+		})
+	}
+
+	if user.OTPExpiresAt == nil || user.OTPCode == nil {
+		logger.Logger.Error("OTPExpiresAt or OTPCode is nil for user")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "OTP code or expiration time is not set",
+		})
+	}
+
+	providedOTP := strings.TrimSpace(req.OTP)
+	actualOTP := *user.OTPCode
+	otpExpiry := *user.OTPExpiresAt
+
+	if providedOTP != actualOTP {
+		logger.Logger.Warnf("OTP verification failed for user ID: %d", user.ID)
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "OTP verification failed or expired",
+		})
+	}
+
+	if time.Now().After(otpExpiry) {
+		logger.Logger.Warnf("OTP expired for user ID: %d", user.ID)
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "OTP verification failed or expired",
+		})
+	}
+
+	// Doğrulama başarılı, OTPCode ve OTPExpiresAt alanlarını temizle
+	user.IsOTPVerified = true
+	user.OTPCode = nil
+	user.OTPExpiresAt = nil
+
+	if err := db.DB.Save(&user).Error; err != nil {
+		logger.Logger.WithError(err).Error("Failed to update OTP verification status")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Error during OTP verification",
+		})
+	}
+
+	logger.Logger.Infof("OTP successfully verified for user ID: %d", user.ID)
+	return c.JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "OTP successfully verified",
+		Data:    map[string]interface{}{"user_id": user.ID},
+	})
+}
