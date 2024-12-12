@@ -23,6 +23,10 @@ type Config struct {
 	RadiusDBPassword string
 	RadiusDBName     string
 	RadiusDBPort     string
+
+	RADIUSServerIP     string
+	RADIUSServerPort   string
+	RADIUSSharedSecret string
 }
 
 func LoadConfig() (*Config, error) {
@@ -46,6 +50,10 @@ func LoadConfig() (*Config, error) {
 		RadiusDBPassword: os.Getenv("RADIUS_DB_PASSWORD"),
 		RadiusDBName:     os.Getenv("RADIUS_DB_NAME"),
 		RadiusDBPort:     os.Getenv("RADIUS_DB_PORT"),
+
+		RADIUSServerIP:     os.Getenv("RADIUS_SERVER_IP"),
+		RADIUSServerPort:   os.Getenv("RADIUS_SERVER_PORT"),
+		RADIUSSharedSecret: os.Getenv("RADIUS_SHARED_SECRET"),
 	}
 
 	return config, nil

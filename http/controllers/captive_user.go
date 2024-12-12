@@ -3,11 +3,18 @@
 package controllers
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"github.com/go-playground/validator/v10"
+	"layeh.com/radius"
+	"layeh.com/radius/rfc2865"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"tedalogger-backend/config"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -21,6 +28,295 @@ import (
 	"tedalogger-backend/models"
 	"tedalogger-backend/providers/validation"
 )
+
+func LoginCaptiveUser(c *fiber.Ctx) error {
+	var req requests.CaptiveUserLoginRequest
+
+	if err := c.BodyParser(&req); err != nil {
+		logger.Logger.WithError(err).Error("Failed to parse Captive User Login request")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid input",
+		})
+	}
+
+	// Validate the request
+	if err := req.Validate(); err != nil {
+		logger.Logger.WithError(err).Error("Validation failed for Captive User Login request")
+		var ve validator.ValidationErrors
+		if errors.As(err, &ve) {
+			var errorMsgs []string
+			for _, fe := range ve {
+				errorMsg := fmt.Sprintf("Field '%s' failed on the '%s' tag", fe.Field(), fe.Tag())
+				errorMsgs = append(errorMsgs, errorMsg)
+			}
+			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: strings.Join(errorMsgs, ", "),
+			})
+		}
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Validation error",
+		})
+	}
+
+	// Load configuration
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logger.Logger.WithError(err).Error("Failed to load configuration")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Configuration error",
+		})
+	}
+
+	// Retrieve the portal from the database
+	var portal models.Portal
+	if err := db.DB.Where("portal_id = ?", req.PortalID).First(&portal).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Portal not found",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to find Portal in database")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	// Unmarshal the login components
+	var loginComponents []models.PortalComponent
+	if err := json.Unmarshal(portal.LoginComponents, &loginComponents); err != nil {
+		logger.Logger.WithError(err).Error("Failed to unmarshal LoginComponents")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Error processing portal components",
+		})
+	}
+
+	// Determine required fields
+	requiredFields := make(map[string]bool)
+	for _, component := range loginComponents {
+		normalizedLabel := strings.ToLower(strings.TrimSpace(component.Label))
+		if component.Required {
+			requiredFields[normalizedLabel] = true
+		}
+	}
+
+	// Check for missing required fields
+	for field := range requiredFields {
+		if _, exists := req.DynamicFields[field]; !exists {
+			logger.Logger.Errorf("Missing required field: %s", field)
+			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Missing required field: " + field,
+			})
+		}
+	}
+
+	// Check for unexpected fields
+	for field := range req.DynamicFields {
+		normalizedField := strings.ToLower(strings.TrimSpace(field))
+		if _, exists := requiredFields[normalizedField]; !exists {
+			logger.Logger.Errorf("Unexpected field: %s", field)
+			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Unexpected field: " + field,
+			})
+		}
+	}
+
+	// Build the query to find the user
+	var user models.CaptiveUser
+	query := db.DB.Where("portal_id = ?", req.PortalID)
+
+	// Mapping from label to database column name
+	// Assuming labels like "first-name" map to "first_name"
+	for key, value := range req.DynamicFields {
+		// Convert label to column name by replacing hyphens with underscores
+		column := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
+
+		// Optionally, validate that the column exists in the CaptiveUser model
+		// This step is crucial to prevent SQL injection if labels are not controlled
+		// For simplicity, we'll assume labels are safe and map correctly
+
+		switch v := value.(type) {
+		case string:
+			query = query.Where(fmt.Sprintf("%s = ?", column), v)
+		case float64:
+			query = query.Where(fmt.Sprintf("%s = ?", column), strconv.FormatFloat(v, 'f', -1, 64))
+		case int:
+			query = query.Where(fmt.Sprintf("%s = ?", column), strconv.Itoa(v))
+		default:
+			logger.Logger.Errorf("Unsupported type for dynamic field: %s", key)
+			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Unsupported type for field: " + key,
+			})
+		}
+	}
+
+	// Find the user in the database
+	if err := query.First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Logger.Warnf("User not found with dynamic fields: %+v", req.DynamicFields)
+			return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Invalid credentials",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to find CaptiveUser in database")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	// Ensure the user has NASName configured
+	if user.NASName == "" {
+		logger.Logger.Error("User does not have NASName or NASIPAddress configured")
+		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid credentials",
+		})
+	}
+
+	// Parse RADIUS server port
+	radiusPort, err := strconv.Atoi(cfg.RADIUSServerPort)
+	if err != nil {
+		logger.Logger.WithError(err).Error("Invalid RADIUS server port")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Configuration error",
+		})
+	}
+
+	// OTP Verification (if enabled)
+	if portal.OtpEnabled {
+		if user.OTPCode == nil || user.OTPExpiresAt == nil || !user.IsOTPVerified {
+			logger.Logger.Warnf("OTP verification required for user ID: %d", user.ID)
+			return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "OTP verification required",
+			})
+		}
+	}
+
+	// RADIUS server address and secret
+	server := fmt.Sprintf("%s:%d", cfg.RADIUSServerIP, radiusPort)
+	secret := cfg.RADIUSSharedSecret
+
+	// Assume that the NAS IP Address is provided in the user struct
+	// If not, you might need to obtain it from another source
+	nasIPAddress := user.NASName // Assuming NASName contains the IP address
+
+	// Create a new RADIUS Access-Request packet
+	packet := radius.New(radius.CodeAccessRequest, []byte(secret))
+
+	// Add User-Name attribute
+	if user.Username == nil {
+		logger.Logger.Error("User.Username is nil")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Authentication error",
+		})
+	}
+	if err := rfc2865.UserName_Set(packet, []byte(*user.Username)); err != nil {
+		logger.Logger.WithError(err).Error("Failed to set User-Name in RADIUS packet")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Authentication error",
+		})
+	}
+
+	// Add NAS-IP-Address attribute
+	nasIP := net.ParseIP(nasIPAddress)
+	if nasIP == nil {
+		logger.Logger.Errorf("Invalid NAS IP address: %s", nasIPAddress)
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid NAS IP address",
+		})
+	}
+	if err := rfc2865.NASIPAddress_Set(packet, nasIP); err != nil {
+		logger.Logger.WithError(err).Error("Failed to set NAS-IP-Address in RADIUS packet")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Authentication error",
+		})
+	}
+
+	if err := rfc2865.UserPassword_Set(packet, []byte(*user.Password)); err != nil {
+		logger.Logger.WithError(err).Error("Failed to set User-Password in RADIUS packet")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Authentication error",
+		})
+	}
+
+	// Send the RADIUS request with a context
+	response, err := radius.Exchange(context.Background(), packet, server)
+	if err != nil {
+		logger.Logger.WithError(err).Error("Radius request failed")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Authentication service unavailable",
+		})
+	}
+
+	// Process the RADIUS response
+	switch response.Code {
+	case radius.CodeAccessAccept:
+		logger.Logger.Infof("RADIUS access accepted for user: %s", *user.Username)
+	case radius.CodeAccessReject:
+		logger.Logger.Warnf("RADIUS access rejected for user: %s", *user.Username)
+		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid credentials",
+		})
+	default:
+		logger.Logger.Warnf("RADIUS server returned unexpected response: %v for user: %s", response.Code, *user.Username)
+		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid credentials",
+		})
+	}
+
+	// Update the last login timestamp
+	now := time.Now()
+	user.LastLoginAt = &now
+	if err := db.DB.Save(&user).Error; err != nil {
+		logger.Logger.WithError(err).Error("Failed to update user login timestamp")
+		// Continue even if updating the timestamp fails
+	}
+
+	// (Optional) Generate JWT or session token
+	// Example:
+	/*
+		token, err := GenerateJWT(user.ID)
+		if err != nil {
+			logger.Logger.WithError(err).Error("Failed to generate JWT")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to generate token",
+			})
+		}
+	*/
+
+	logger.Logger.Infof("User %s authenticated successfully via RADIUS", *user.Username)
+
+	return c.JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "Login successful",
+		Data: map[string]interface{}{
+			"user_id": user.ID,
+			// "token": token, // Uncomment if JWT/token is generated
+		},
+	})
+}
 
 func RegisterCaptiveUser(c *fiber.Ctx) error {
 	var req requests.CaptiveUserRegisterRequest
@@ -258,7 +554,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 			})
 		}
 
-		expiry := time.Now().In(location).Add(5 * time.Minute) // OTP valid for 5 minutes
+		expiry := time.Now().In(location).Add(5 * time.Minute)
 		otpExpiresAt = &expiry
 
 		logger.Logger.Infof("Fixed OTP code set to: %s for user", *otpCode)
@@ -270,7 +566,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		FirstName:     &firstName,
 		LastName:      &lastName,
 		BirthDate:     birthYearPtr,
-		Username:      nil, // To be set after creation if not provided
+		Username:      nil,
 		Password:      hashedPassword,
 		Email:         &email,
 		Phone:         phonePtr,
@@ -338,7 +634,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		if err := db.RadiusDB.Exec(`
 			INSERT INTO radcheck (username, attribute, op, value)
 			VALUES (?, 'Cleartext-Password', ':=', ?)`,
-			*captiveUser.Username, *captiveUser.Password).Error; err != nil {
+			*captiveUser.Username, *hashedPassword).Error; err != nil {
 			tx.Rollback()
 			logger.Logger.WithError(err).Error("Failed to add user to radcheck for password")
 			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{

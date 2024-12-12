@@ -25,3 +25,13 @@ func (r *VerifyOTPRequest) Validate() error {
 	validate := validator.New()
 	return validate.Struct(r)
 }
+
+type CaptiveUserLoginRequest struct {
+	PortalID      string                 `json:"portalID" validate:"required"`
+	DynamicFields map[string]interface{} `json:"dynamic_fields,omitempty" validate:"required"`
+}
+
+func (r *CaptiveUserLoginRequest) Validate() error {
+	validate := validator.New()
+	return validate.Struct(r)
+}

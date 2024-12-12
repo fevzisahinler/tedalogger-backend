@@ -128,21 +128,18 @@ func ValidateTCKN(tckn string) (bool, error) {
 		return false, errors.New("TCKN must be 11 digits")
 	}
 
-	// Check if all characters are digits
 	for _, c := range tckn {
 		if c < '0' || c > '9' {
 			return false, errors.New("TCKN must contain only digits")
 		}
 	}
 
-	// Convert TCKN to integers
 	var digits [11]int
 	for i, c := range tckn {
 		digit, _ := strconv.Atoi(string(c))
 		digits[i] = digit
 	}
 
-	// TCKN validation algorithm
 	sumOdd := digits[0] + digits[2] + digits[4] + digits[6] + digits[8]
 	sumEven := digits[1] + digits[3] + digits[5] + digits[7]
 	check1 := ((sumOdd * 7) - sumEven) % 10

@@ -14,7 +14,7 @@ type CaptiveUser struct {
 	LastName      *string    `gorm:"null" json:"last_name,omitempty"`
 	BirthDate     *int       `gorm:"null" json:"birth_date"`
 	Username      *string    `gorm:"uniqueIndex;null" json:"username,omitempty"`
-	Password      *string    `gorm:"null" json:"password,omitempty"` // Nullable yapıldı
+	Password      *string    `gorm:"null" json:"password,omitempty"`
 	Email         *string    `gorm:"null" json:"email,omitempty"`
 	Phone         *string    `gorm:"null" json:"phone,omitempty"`
 	RadiusGroup   string     `gorm:"not null" json:"radius_group"`
@@ -22,6 +22,7 @@ type CaptiveUser struct {
 	OTPCode       *string    `json:"otp_code,omitempty"`
 	OTPExpiresAt  *time.Time `json:"otp_expires_at,omitempty"`
 	IsOTPVerified bool       `gorm:"default:false" json:"is_otp_verified"`
+	LastLoginAt   *time.Time `json:"last_login_at,omitempty"`
 	CreatedAt     time.Time  `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt     time.Time  `gorm:"autoUpdateTime" json:"updated_at"`
 }
