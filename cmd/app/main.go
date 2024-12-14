@@ -68,6 +68,7 @@ func main() {
 	routes.LogDestinationRoutes(app)
 	routes.SignSettingsRoutes(app)
 	routes.CaptiveUserRoutes(app)
+	routes.SnmpRoutes(app)
 
 	port := ":4000"
 	logger.Logger.Infof("Server is running on port %s", port)
