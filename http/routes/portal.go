@@ -9,10 +9,10 @@ import (
 
 func PortalRoutes(app *fiber.App) {
 
-	app.Post("/create", controllers.CreatePortal, middleware.JWTMiddleware())
-	app.Put("/update/:id", controllers.UpdatePortal, middleware.JWTMiddleware())
-	app.Delete("/delete/:id", controllers.DeletePortal, middleware.JWTMiddleware())
-	app.Get("/get_all", controllers.GetAllPortals, middleware.JWTMiddleware())
-	app.Get("/get_by_id/:id", controllers.GetPortalByID, middleware.JWTMiddleware())
-	app.Get("/get_by_uuid/:uuid", controllers.GetPortalByUUID)
+	app.Post("/portal/create", controllers.CreatePortal, middleware.JWTMiddleware())
+	app.Put("/portal/update/:id", controllers.UpdatePortal, middleware.JWTMiddleware())
+	app.Delete("/portal/delete/:id", controllers.DeletePortal, middleware.JWTMiddleware())
+	app.Get("/portal/get_all", controllers.GetAllPortals, middleware.JWTMiddleware())
+	app.Get("/portal/get_by_id/:id", controllers.GetPortalByID, middleware.JWTMiddleware())
+	app.Get("/portal/get_by_uuid/:uuid", controllers.GetPortalByUUID)
 }
