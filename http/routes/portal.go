@@ -8,12 +8,11 @@ import (
 )
 
 func PortalRoutes(app *fiber.App) {
-	portal := app.Group("portal", middleware.JWTMiddleware())
 
-	portal.Post("/create", controllers.CreatePortal)
-	portal.Put("/update/:id", controllers.UpdatePortal)
-	portal.Delete("/delete/:id", controllers.DeletePortal)
-	portal.Get("/get_all", controllers.GetAllPortals)
-	portal.Get("/get_by_id/:id", controllers.GetPortalByID)
-	portal.Get("/get_by_uuid/:uuid", controllers.GetPortalByUUID)
+	app.Post("/create", controllers.CreatePortal, middleware.JWTMiddleware())
+	app.Put("/update/:id", controllers.UpdatePortal, middleware.JWTMiddleware())
+	app.Delete("/delete/:id", controllers.DeletePortal, middleware.JWTMiddleware())
+	app.Get("/get_all", controllers.GetAllPortals, middleware.JWTMiddleware())
+	app.Get("/get_by_id/:id", controllers.GetPortalByID, middleware.JWTMiddleware())
+	app.Get("/get_by_uuid/:uuid", controllers.GetPortalByUUID)
 }
