@@ -134,17 +134,14 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 	query := db.DB.Where("portal_id = ?", req.PortalID)
 
 	// Mapping from label to database column name
-	// Assuming labels like "first-name" map to "first_name"
 	for key, value := range req.DynamicFields {
-		// Convert label to column name by replacing hyphens with underscores
 		column := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
-
-		// Optionally, validate that the column exists in the CaptiveUser model
-		// This step is crucial to prevent SQL injection if labels are not controlled
-		// For simplicity, we'll assume labels are safe and map correctly
-
 		switch v := value.(type) {
 		case string:
+			if column == "password" {
+				// Skip adding the password to the query as it will be verified later
+				continue
+			}
 			query = query.Where(fmt.Sprintf("%s = ?", column), v)
 		case float64:
 			query = query.Where(fmt.Sprintf("%s = ?", column), strconv.FormatFloat(v, 'f', -1, 64))
@@ -159,7 +156,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// Find the user in the database
+	// Execute the query to find the user
 	if err := query.First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			logger.Logger.Warnf("User not found with dynamic fields: %+v", req.DynamicFields)
@@ -174,6 +171,34 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 			Message: "Unexpected error occurred",
 		})
 	}
+
+	// Verify the password using bcrypt
+	if user.Password == nil {
+		logger.Logger.Error("Password is nil for the user")
+		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid credentials",
+		})
+	}
+
+	inputPassword, ok := req.DynamicFields["password"].(string)
+	if !ok {
+		logger.Logger.Error("Password field is missing or not a string")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Password is required",
+		})
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(*user.Password), []byte(inputPassword)); err != nil {
+		logger.Logger.Warnf("Password mismatch for user: %s", *user.Username)
+		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid credentials",
+		})
+	}
+
+	logger.Logger.Infof("User %s authenticated successfully", *user.Username)
 
 	// Ensure the user has NASName configured
 	if user.NASName == "" {
@@ -858,7 +883,7 @@ func VerifyLoginOTP(c *fiber.Ctx) error {
 
 	providedOTP := strings.TrimSpace(req.OTP)
 	actualOTP := *user.OTPCode
-	otpExpiry := *user.OTPExpiresAt
+	//otpExpiry := *user.OTPExpiresAt
 
 	if providedOTP != actualOTP {
 		logger.Logger.Warnf("OTP verification failed for user ID: %d", user.ID)
@@ -868,13 +893,15 @@ func VerifyLoginOTP(c *fiber.Ctx) error {
 		})
 	}
 
-	if time.Now().After(otpExpiry) {
-		logger.Logger.Warnf("OTP expired for user ID: %d", user.ID)
-		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "OTP verification failed or expired",
-		})
-	}
+	/*
+		if time.Now().After(otpExpiry) {
+			logger.Logger.Warnf("OTP expired for user ID: %d", user.ID)
+			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "OTP verification failed or expired",
+			})
+		}
+	*/
 
 	// Doğrulama başarılı, OTPCode ve OTPExpiresAt alanlarını temizle
 	user.IsOTPVerified = true
