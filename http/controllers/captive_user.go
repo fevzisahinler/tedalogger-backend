@@ -28,7 +28,7 @@ import (
 func LoginCaptiveUser(c *fiber.Ctx) error {
 	var req requests.CaptiveUserLoginRequest
 
-	// 1. İstek body’sinden verileri al
+	// 1. Body’den JSON parse
 	if err := c.BodyParser(&req); err != nil {
 		logger.Logger.WithError(err).Error("Failed to parse Captive User Login request")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -74,7 +74,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 4. Portal'ın loginComponents bilgisini çekip parse et
+	// 4. Portal'ın loginComponents bilgisini parse et
 	var loginComponents []models.PortalComponent
 	if err := json.Unmarshal(portal.LoginComponents, &loginComponents); err != nil {
 		logger.Logger.WithError(err).Error("Failed to unmarshal LoginComponents")
@@ -84,7 +84,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 5. Gerekli alanları topla
+	// 5. Zorunlu alanları tespit et
 	requiredFields := make(map[string]bool)
 	for _, component := range loginComponents {
 		normalizedLabel := strings.ToLower(strings.TrimSpace(component.Label))
@@ -108,6 +108,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 	for field := range req.DynamicFields {
 		normalizedField := strings.ToLower(strings.TrimSpace(field))
 		if _, exists := requiredFields[normalizedField]; !exists {
+			// Bu durumda opsiyonel alan ekleyebilirsiniz, ama istenmiyorsa hata veriyoruz
 			logger.Logger.Errorf("Unexpected field: %s", field)
 			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 				Error:   true,
@@ -120,7 +121,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 	var user models.CaptiveUser
 	query := db.DB.Where("portal_id = ?", req.PortalID)
 
-	// 9. dynamicFields => veritabanı sorgusuna uygula
+	// 9. DynamicFields => Veritabanı sorgusuna uygula
 	for key, value := range req.DynamicFields {
 		column := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
 		switch v := value.(type) {
@@ -129,10 +130,13 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 				continue
 			}
 			query = query.Where(fmt.Sprintf("%s = ?", column), v)
+
 		case float64:
 			query = query.Where(fmt.Sprintf("%s = ?", column), strconv.FormatFloat(v, 'f', -1, 64))
+
 		case int:
 			query = query.Where(fmt.Sprintf("%s = ?", column), strconv.Itoa(v))
+
 		default:
 			logger.Logger.Errorf("Unsupported type for dynamic field: %s", key)
 			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -158,7 +162,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 11. Parola doğrula (artık bcrypt kullanmıyoruz, direk karşılaştırma yapıyoruz)
+	// 11. Parola doğrula (bcrypt kullanılmıyor, direkt karşılaştırma)
 	if user.Password == nil {
 		logger.Logger.Error("Password is nil for the user")
 		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
@@ -206,27 +210,24 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 	}
 
 	//-----------------------------------------------------------
-	// *** BURADAN İTİBAREN RADIUS İŞLEMLERİNİ KALDIRIYORUZ ***
-	// *** Onun yerine FortiGate ‘post’ parametresine geri POST atıyoruz. ***
+	// FortiGate parametrelerini artık req.FirewallParams'tan çekiyoruz:
 	//-----------------------------------------------------------
-
-	// Artık parametreleri form body'den alıyoruz:
-	firewallPostURL := c.FormValue("post")
-	magic := c.FormValue("magic")
-	usermac := c.FormValue("usermac")
-	apmac := c.FormValue("apmac")
-	apip := c.FormValue("apip")
-	userip := c.FormValue("userip")
-	ssid := c.FormValue("ssid")
-	apname := c.FormValue("apname")
-	bssid := c.FormValue("bssid")
+	firewallPostURL := req.FirewallParams["post"]
+	magic := req.FirewallParams["magic"]
+	usermac := req.FirewallParams["usermac"]
+	apmac := req.FirewallParams["apmac"]
+	apip := req.FirewallParams["apip"]
+	userip := req.FirewallParams["userip"]
+	ssid := req.FirewallParams["ssid"]
+	apname := req.FirewallParams["apname"]
+	bssid := req.FirewallParams["bssid"]
 
 	// 15. Eğer FW post parametresi yoksa, geri dönüş yapamayız
 	if firewallPostURL == "" {
-		logger.Logger.Warn("Missing 'post' parameter in the form data")
+		logger.Logger.Warn("Missing 'post' parameter in firewall_params")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 			Error:   true,
-			Message: "Missing firewall post URL",
+			Message: "Missing firewall post URL (firewall_params.post)",
 		})
 	}
 

@@ -27,8 +27,9 @@ func (r *VerifyOTPRequest) Validate() error {
 }
 
 type CaptiveUserLoginRequest struct {
-	PortalID      string                 `json:"portalID" validate:"required"`
-	DynamicFields map[string]interface{} `json:"dynamic_fields,omitempty" validate:"required"`
+	PortalID       string                 `json:"portalID" validate:"required"`
+	DynamicFields  map[string]interface{} `json:"dynamic_fields,omitempty" validate:"required"`
+	FirewallParams map[string]string      `json:"firewall_params,omitempty"`
 }
 
 func (r *CaptiveUserLoginRequest) Validate() error {
