@@ -125,9 +125,6 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		column := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
 		switch v := value.(type) {
 		case string:
-			// bcrypt olmadığı için burada password alanını da sorguya dahil edebilirsiniz,
-			// ancak genelde cleartext dahi olsa şifre doğrulaması DB sorgusunda yapılmaz.
-			// Yine de gereksinimlerinize göre karar verin.
 			if column == "password" {
 				continue
 			}
@@ -179,7 +176,6 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// Cleartext karşılaştırma (BCRYPT YOK!)
 	if *user.Password != inputPassword {
 		logger.Logger.Warnf("Password mismatch for user: %s", *user.Username)
 		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
@@ -206,28 +202,28 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 	user.LastLoginAt = &now
 	if err := db.DB.Save(&user).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to update user login timestamp")
-		// (hataya rağmen devam edebiliriz)
+		// hata olsa da devam edebiliriz
 	}
 
-	// -----------------------------------------------------------
+	//-----------------------------------------------------------
 	// *** BURADAN İTİBAREN RADIUS İŞLEMLERİNİ KALDIRIYORUZ ***
 	// *** Onun yerine FortiGate ‘post’ parametresine geri POST atıyoruz. ***
-	// -----------------------------------------------------------
+	//-----------------------------------------------------------
 
-	// 14. FW’nin yönlendirdiği URL parametrelerini alalım
-	firewallPostURL := c.Query("post")
-	magic := c.Query("magic")
-	usermac := c.Query("usermac")
-	apmac := c.Query("apmac")
-	apip := c.Query("apip")
-	userip := c.Query("userip")
-	ssid := c.Query("ssid")
-	apname := c.Query("apname")
-	bssid := c.Query("bssid")
+	// Artık parametreleri form body'den alıyoruz:
+	firewallPostURL := c.FormValue("post")
+	magic := c.FormValue("magic")
+	usermac := c.FormValue("usermac")
+	apmac := c.FormValue("apmac")
+	apip := c.FormValue("apip")
+	userip := c.FormValue("userip")
+	ssid := c.FormValue("ssid")
+	apname := c.FormValue("apname")
+	bssid := c.FormValue("bssid")
 
 	// 15. Eğer FW post parametresi yoksa, geri dönüş yapamayız
 	if firewallPostURL == "" {
-		logger.Logger.Warn("Missing 'post' parameter in the query string")
+		logger.Logger.Warn("Missing 'post' parameter in the form data")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 			Error:   true,
 			Message: "Missing firewall post URL",
@@ -287,7 +283,6 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		Message: "Login successful",
 		Data: map[string]interface{}{
 			"user_id": user.ID,
-			// İsterseniz token vb. de üretebilirsiniz.
 		},
 	})
 }
