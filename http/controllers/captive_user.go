@@ -3,22 +3,18 @@
 package controllers
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/go-playground/validator/v10"
-	"layeh.com/radius"
-	"layeh.com/radius/rfc2865"
-	"net"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
-	"tedalogger-backend/config"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"tedalogger-backend/db"
@@ -32,6 +28,7 @@ import (
 func LoginCaptiveUser(c *fiber.Ctx) error {
 	var req requests.CaptiveUserLoginRequest
 
+	// 1. İstek body’sinden verileri al
 	if err := c.BodyParser(&req); err != nil {
 		logger.Logger.WithError(err).Error("Failed to parse Captive User Login request")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -40,7 +37,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// Validate the request
+	// 2. Request validasyonlarını çalıştır
 	if err := req.Validate(); err != nil {
 		logger.Logger.WithError(err).Error("Validation failed for Captive User Login request")
 		var ve validator.ValidationErrors
@@ -61,17 +58,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// Load configuration
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		logger.Logger.WithError(err).Error("Failed to load configuration")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Configuration error",
-		})
-	}
-
-	// Retrieve the portal from the database
+	// 3. Portal bilgisi al
 	var portal models.Portal
 	if err := db.DB.Where("portal_id = ?", req.PortalID).First(&portal).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -87,7 +74,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// Unmarshal the login components
+	// 4. Portal'ın loginComponents bilgisini çekip parse et
 	var loginComponents []models.PortalComponent
 	if err := json.Unmarshal(portal.LoginComponents, &loginComponents); err != nil {
 		logger.Logger.WithError(err).Error("Failed to unmarshal LoginComponents")
@@ -97,7 +84,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// Determine required fields
+	// 5. Gerekli alanları topla
 	requiredFields := make(map[string]bool)
 	for _, component := range loginComponents {
 		normalizedLabel := strings.ToLower(strings.TrimSpace(component.Label))
@@ -106,7 +93,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// Check for missing required fields
+	// 6. Zorunlu alanların doldurulup doldurulmadığını kontrol et
 	for field := range requiredFields {
 		if _, exists := req.DynamicFields[field]; !exists {
 			logger.Logger.Errorf("Missing required field: %s", field)
@@ -117,7 +104,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// Check for unexpected fields
+	// 7. Beklenmeyen alan var mı diye kontrol et (opsiyonel)
 	for field := range req.DynamicFields {
 		normalizedField := strings.ToLower(strings.TrimSpace(field))
 		if _, exists := requiredFields[normalizedField]; !exists {
@@ -129,17 +116,19 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// Build the query to find the user
+	// 8. DB'den kullanıcıyı bulmak için sorgu hazırla
 	var user models.CaptiveUser
 	query := db.DB.Where("portal_id = ?", req.PortalID)
 
-	// Mapping from label to database column name
+	// 9. dynamicFields => veritabanı sorgusuna uygula
 	for key, value := range req.DynamicFields {
 		column := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
 		switch v := value.(type) {
 		case string:
+			// bcrypt olmadığı için burada password alanını da sorguya dahil edebilirsiniz,
+			// ancak genelde cleartext dahi olsa şifre doğrulaması DB sorgusunda yapılmaz.
+			// Yine de gereksinimlerinize göre karar verin.
 			if column == "password" {
-				// Skip adding the password to the query as it will be verified later
 				continue
 			}
 			query = query.Where(fmt.Sprintf("%s = ?", column), v)
@@ -156,7 +145,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// Execute the query to find the user
+	// 10. Kullanıcıyı veritabanında ara
 	if err := query.First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			logger.Logger.Warnf("User not found with dynamic fields: %+v", req.DynamicFields)
@@ -172,7 +161,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// Verify the password using bcrypt
+	// 11. Parola doğrula (artık bcrypt kullanmıyoruz, direk karşılaştırma yapıyoruz)
 	if user.Password == nil {
 		logger.Logger.Error("Password is nil for the user")
 		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
@@ -190,7 +179,8 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	if err := bcrypt.CompareHashAndPassword([]byte(*user.Password), []byte(inputPassword)); err != nil {
+	// Cleartext karşılaştırma (BCRYPT YOK!)
+	if *user.Password != inputPassword {
 		logger.Logger.Warnf("Password mismatch for user: %s", *user.Username)
 		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
 			Error:   true,
@@ -198,28 +188,9 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	logger.Logger.Infof("User %s authenticated successfully", *user.Username)
+	logger.Logger.Infof("Local DB user %s authenticated successfully", *user.Username)
 
-	// Ensure the user has NASName configured
-	if user.NASName == "" {
-		logger.Logger.Error("User does not have NASName or NASIPAddress configured")
-		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Invalid credentials",
-		})
-	}
-
-	// Parse RADIUS server port
-	radiusPort, err := strconv.Atoi(cfg.RADIUSServerPort)
-	if err != nil {
-		logger.Logger.WithError(err).Error("Invalid RADIUS server port")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Configuration error",
-		})
-	}
-
-	// OTP Verification (if enabled)
+	// 12. OTP kontrolü (opsiyonel)
 	if portal.OtpEnabled {
 		if user.OTPCode == nil || user.OTPExpiresAt == nil || !user.IsOTPVerified {
 			logger.Logger.Warnf("OTP verification required for user ID: %d", user.ID)
@@ -230,115 +201,93 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// RADIUS server address and secret
-	server := fmt.Sprintf("%s:%d", cfg.RADIUSServerIP, radiusPort)
-	secret := cfg.RADIUSSharedSecret
-
-	// Assume that the NAS IP Address is provided in the user struct
-	// If not, you might need to obtain it from another source
-	nasIPAddress := user.NASName // Assuming NASName contains the IP address
-
-	// Create a new RADIUS Access-Request packet
-	packet := radius.New(radius.CodeAccessRequest, []byte(secret))
-
-	// Add User-Name attribute
-	if user.Username == nil {
-		logger.Logger.Error("User.Username is nil")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Authentication error",
-		})
-	}
-	if err := rfc2865.UserName_Set(packet, []byte(*user.Username)); err != nil {
-		logger.Logger.WithError(err).Error("Failed to set User-Name in RADIUS packet")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Authentication error",
-		})
-	}
-
-	// Add NAS-IP-Address attribute
-	nasIP := net.ParseIP(nasIPAddress)
-	if nasIP == nil {
-		logger.Logger.Errorf("Invalid NAS IP address: %s", nasIPAddress)
-		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Invalid NAS IP address",
-		})
-	}
-	if err := rfc2865.NASIPAddress_Set(packet, nasIP); err != nil {
-		logger.Logger.WithError(err).Error("Failed to set NAS-IP-Address in RADIUS packet")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Authentication error",
-		})
-	}
-
-	if err := rfc2865.UserPassword_Set(packet, []byte(*user.Password)); err != nil {
-		logger.Logger.WithError(err).Error("Failed to set User-Password in RADIUS packet")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Authentication error",
-		})
-	}
-
-	// Send the RADIUS request with a context
-	response, err := radius.Exchange(context.Background(), packet, server)
-	if err != nil {
-		logger.Logger.WithError(err).Error("Radius request failed")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Authentication service unavailable",
-		})
-	}
-
-	// Process the RADIUS response
-	switch response.Code {
-	case radius.CodeAccessAccept:
-		logger.Logger.Infof("RADIUS access accepted for user: %s", *user.Username)
-	case radius.CodeAccessReject:
-		logger.Logger.Warnf("RADIUS access rejected for user: %s", *user.Username)
-		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Invalid credentials",
-		})
-	default:
-		logger.Logger.Warnf("RADIUS server returned unexpected response: %v for user: %s", response.Code, *user.Username)
-		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Invalid credentials",
-		})
-	}
-
-	// Update the last login timestamp
+	// 13. Son başarılı login zamanını güncelle
 	now := time.Now()
 	user.LastLoginAt = &now
 	if err := db.DB.Save(&user).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to update user login timestamp")
-		// Continue even if updating the timestamp fails
+		// (hataya rağmen devam edebiliriz)
 	}
 
-	// (Optional) Generate JWT or session token
-	// Example:
-	/*
-		token, err := GenerateJWT(user.ID)
-		if err != nil {
-			logger.Logger.WithError(err).Error("Failed to generate JWT")
-			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-				Error:   true,
-				Message: "Failed to generate token",
-			})
-		}
-	*/
+	// -----------------------------------------------------------
+	// *** BURADAN İTİBAREN RADIUS İŞLEMLERİNİ KALDIRIYORUZ ***
+	// *** Onun yerine FortiGate ‘post’ parametresine geri POST atıyoruz. ***
+	// -----------------------------------------------------------
 
-	logger.Logger.Infof("User %s authenticated successfully via RADIUS", *user.Username)
+	// 14. FW’nin yönlendirdiği URL parametrelerini alalım
+	firewallPostURL := c.Query("post")
+	magic := c.Query("magic")
+	usermac := c.Query("usermac")
+	apmac := c.Query("apmac")
+	apip := c.Query("apip")
+	userip := c.Query("userip")
+	ssid := c.Query("ssid")
+	apname := c.Query("apname")
+	bssid := c.Query("bssid")
 
+	// 15. Eğer FW post parametresi yoksa, geri dönüş yapamayız
+	if firewallPostURL == "" {
+		logger.Logger.Warn("Missing 'post' parameter in the query string")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Missing firewall post URL",
+		})
+	}
+
+	// 16. FortiGate’e bu parametreleri + username/password gönderelim
+	formData := url.Values{}
+	formData.Set("login", "")
+	formData.Set("magic", magic)
+	formData.Set("usermac", usermac)
+	formData.Set("apmac", apmac)
+	formData.Set("apip", apip)
+	formData.Set("userip", userip)
+	formData.Set("ssid", ssid)
+	formData.Set("apname", apname)
+	formData.Set("bssid", bssid)
+	formData.Set("username", *user.Username)
+	formData.Set("password", inputPassword)
+
+	// 17. HTTP POST yaparak FortiGate’e bu verileri iletelim
+	resp, err := http.PostForm(firewallPostURL, formData)
+	if err != nil {
+		logger.Logger.WithError(err).Error("Failed to POST data to FortiGate")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not contact firewall",
+		})
+	}
+	defer resp.Body.Close()
+
+	// 18. Dönen cevabı okuyalım
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		logger.Logger.WithError(err).Error("Failed to read response from FortiGate")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Could not read firewall response",
+		})
+	}
+	bodyStr := string(bodyBytes)
+
+	// 19. FortiGate cevabında "Auth=Failed" geçiyorsa başarısız
+	if strings.Contains(bodyStr, "Auth=Failed") {
+		logger.Logger.Warnf("FortiGate authentication failed for user: %s", *user.Username)
+		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid credentials (FortiGate)",
+		})
+	}
+
+	logger.Logger.Infof("FortiGate authentication succeeded for user: %s", *user.Username)
+
+	// 20. Başarılı yanıt dönelim
 	return c.JSON(responses.SuccessResponse{
 		Error:   false,
 		Message: "Login successful",
 		Data: map[string]interface{}{
 			"user_id": user.ID,
-			// "token": token, // Uncomment if JWT/token is generated
+			// İsterseniz token vb. de üretebilirsiniz.
 		},
 	})
 }
@@ -346,6 +295,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 func RegisterCaptiveUser(c *fiber.Ctx) error {
 	var req requests.CaptiveUserRegisterRequest
 
+	// 1. İstek gövdesinden verileri alıyoruz
 	if err := c.BodyParser(&req); err != nil {
 		logger.Logger.WithError(err).Error("Failed to parse Captive User register request")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -354,6 +304,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// 2. Request içerisindeki validasyonları çalıştırıyoruz
 	if err := req.Validate(); err != nil {
 		logger.Logger.WithError(err).Error("Validation failed for Captive User register request")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -362,6 +313,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// 3. İlgili portal'ı çekiyoruz
 	var portal models.Portal
 	if err := db.DB.Where("portal_id = ?", req.PortalID).First(&portal).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -377,6 +329,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// 4. Portal içerisindeki signupComponents (JSON) bilgisini alıp parse ediyoruz
 	var signupComponents []models.PortalComponent
 	if err := json.Unmarshal(portal.SignupComponents, &signupComponents); err != nil {
 		logger.Logger.WithError(err).Error("Failed to unmarshal SignupComponents")
@@ -386,6 +339,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// 5. Gerekli alanların toplanması (requiredFields vb.)
 	requiredFields := make(map[string]bool)
 	tcknValidationRequired := false
 	tcknData := struct {
@@ -401,6 +355,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 			requiredFields[normalizedLabel] = true
 		}
 
+		// TCKN Validation (Opsiyonel senaryo)
 		if normalizedLabel == "tckn" && component.Required {
 			tcknValidationRequired = true
 
@@ -442,6 +397,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 
 	logger.Logger.Infof("Received dynamic_fields for PortalID %s", req.PortalID)
 
+	// 6. Gerekli alanlar doldurulmuş mu?
 	for field := range requiredFields {
 		if _, exists := req.DynamicFields[field]; !exists {
 			logger.Logger.Errorf("Missing required field: %s", field)
@@ -452,6 +408,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
+	// 7. (Opsiyonel) TCKN Doğrulama
 	if tcknValidationRequired {
 		if tcknData.TCKN == "" || tcknData.FirstName == "" || tcknData.LastName == "" || tcknData.BirthYear == 0 {
 			logger.Logger.Error("Missing information for ID verification")
@@ -462,7 +419,12 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 
 		logger.Logger.Infof("Validating identity for TCKN: %s", tcknData.TCKN)
-		valid, err := validation.ValidateIdentity(tcknData.TCKN, tcknData.FirstName, tcknData.LastName, tcknData.BirthYear)
+		valid, err := validation.ValidateIdentity(
+			tcknData.TCKN,
+			tcknData.FirstName,
+			tcknData.LastName,
+			tcknData.BirthYear,
+		)
 		if err != nil {
 			logger.Logger.WithError(err).Error("Error during ID verification")
 			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -480,6 +442,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
+	// 8. Dynamic Fields içindeki değerleri alıyoruz
 	firstName := ""
 	if val, exists := req.DynamicFields["first-name"]; exists {
 		if str, ok := val.(string); ok {
@@ -543,30 +506,24 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
+	// 9. Parolayı cleartext almak istiyorsak:
 	passwordRaw := ""
 	if val, exists := req.DynamicFields["password"]; exists {
 		if str, ok := val.(string); ok {
 			passwordRaw = strings.TrimSpace(str)
 		}
 	}
-
-	var hashedPassword *string
+	// Parolayı herhangi bir hash işlemine tabii tutmadan olduğu gibi saklıyoruz (Güvenlik açığı!).
+	var cleartextPassword *string
 	if passwordRaw != "" {
-		hashed, err := bcrypt.GenerateFromPassword([]byte(passwordRaw), bcrypt.DefaultCost)
-		if err != nil {
-			logger.Logger.WithError(err).Error("Failed to hash password")
-			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-				Error:   true,
-				Message: "Error processing password",
-			})
-		}
-		hashedStr := string(hashed)
-		hashedPassword = &hashedStr
+		cleartextPassword = &passwordRaw
 	}
 
+	// 10. OTP ayarları (varsa)
 	var otpCode *string
 	var otpExpiresAt *time.Time
 	if portal.OtpEnabled {
+		// Örnek olarak sabit OTP kodu
 		fixedOTP := "1234"
 		otpCode = &fixedOTP
 
@@ -578,21 +535,21 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 				Message: "Failed to process time zone",
 			})
 		}
-
 		expiry := time.Now().In(location).Add(5 * time.Minute)
 		otpExpiresAt = &expiry
 
 		logger.Logger.Infof("Fixed OTP code set to: %s for user", *otpCode)
 	}
 
+	// 11. CaptiveUser modelini oluşturalım (PostgreSQL tablosuna kaydedeceğiz)
 	captiveUser := models.CaptiveUser{
 		PortalID:      req.PortalID,
 		TCKN:          &tckn,
 		FirstName:     &firstName,
 		LastName:      &lastName,
 		BirthDate:     birthYearPtr,
-		Username:      nil,
-		Password:      hashedPassword,
+		Username:      nil,               // Bunu birazdan dolduracağız
+		Password:      cleartextPassword, // Artık cleartext saklanıyor (UYARI: Güvenlik açığı!)
 		Email:         &email,
 		Phone:         phonePtr,
 		RadiusGroup:   portal.RadiusGroupName,
@@ -602,6 +559,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		IsOTPVerified: false,
 	}
 
+	// 12. PostgreSQL transaction başlat
 	tx := db.DB.Begin()
 	if tx.Error != nil {
 		logger.Logger.WithError(tx.Error).Error("Failed to begin transaction")
@@ -611,6 +569,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// 13. CaptiveUser tablosuna kaydet
 	if err := tx.Create(&captiveUser).Error; err != nil {
 		tx.Rollback()
 		logger.Logger.WithError(err).Error("Failed to create CaptiveUser in PostgreSQL")
@@ -622,6 +581,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 
 	logger.Logger.Infof("Created CaptiveUser with ID: %d", captiveUser.ID)
 
+	// Eğer bir username girmemişse ID'yi username olarak atayabiliriz
 	if username == "" {
 		userIDStr := strconv.FormatUint(uint64(captiveUser.ID), 10)
 		captiveUser.Username = &userIDStr
@@ -629,6 +589,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		captiveUser.Username = &username
 	}
 
+	// Username güncellemesi
 	if err := tx.Save(&captiveUser).Error; err != nil {
 		tx.Rollback()
 		logger.Logger.WithError(err).Error("Failed to set Username for CaptiveUser")
@@ -638,6 +599,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// 14. Radius tarafında NAS'ı bulalım
 	var nas models.NAS
 	if err := db.RadiusDB.Where("nasname = ?", portal.NasName).First(&nas).Error; err != nil {
 		tx.Rollback()
@@ -655,11 +617,13 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// 15. Radius'ta radcheck tablosuna cleartext password ekliyoruz
 	if captiveUser.Password != nil && *captiveUser.Password != "" {
+		// Artık bcrypt ile hashlemeden, doğrudan cleartext password kaydediyoruz
 		if err := db.RadiusDB.Exec(`
 			INSERT INTO radcheck (username, attribute, op, value)
 			VALUES (?, 'Cleartext-Password', ':=', ?)`,
-			*captiveUser.Username, *hashedPassword).Error; err != nil {
+			*captiveUser.Username, *captiveUser.Password).Error; err != nil {
 			tx.Rollback()
 			logger.Logger.WithError(err).Error("Failed to add user to radcheck for password")
 			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -669,6 +633,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
+	// 16. NAS IP adresi kontrolü
 	if nas.Nasname != "" {
 		if err := db.RadiusDB.Exec(`
 			INSERT INTO radcheck (username, attribute, op, value)
@@ -683,6 +648,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
+	// 17. Kullanıcıyı Radius grubuna ekliyoruz
 	if captiveUser.RadiusGroup != "" {
 		if err := db.RadiusDB.Exec(`
 			INSERT INTO radusergroup (username, groupname, priority)
@@ -697,6 +663,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
+	// 18. PostgreSQL transaction commit
 	if err := tx.Commit().Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to commit transaction for CaptiveUser registration")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -705,6 +672,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// 19. OTP varsa, kullanıcıya OTP gönderildiğini belirtiyoruz
 	if portal.OtpEnabled {
 		logger.Logger.Info("Fixed OTP sent to user (simulation)")
 
@@ -715,6 +683,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
+	// OTP yoksa direkt başarılı yanıt dönüyoruz
 	return c.Status(http.StatusCreated).JSON(responses.SuccessResponse{
 		Error:   false,
 		Message: "User created successfully",
