@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-playground/validator/v10"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -245,37 +244,41 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 	formData.Set("username", *user.Username)
 	formData.Set("password", inputPassword)
 
-	// 17. HTTP POST yaparak FortiGate’e bu verileri iletelim
-	resp, err := http.PostForm(firewallPostURL, formData)
-	if err != nil {
-		logger.Logger.WithError(err).Error("Failed to POST data to FortiGate")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Could not contact firewall",
-		})
-	}
-	defer resp.Body.Close()
+	/*
+		// 17. HTTP POST yaparak FortiGate’e bu verileri iletelim
+		resp, err := http.PostForm(firewallPostURL, formData)
+		if err != nil {
+			logger.Logger.WithError(err).Error("Failed to POST data to FortiGate")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not contact firewall",
+			})
+		}
+		defer resp.Body.Close()
+	*/
 
-	// 18. Dönen cevabı okuyalım
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		logger.Logger.WithError(err).Error("Failed to read response from FortiGate")
-		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Could not read firewall response",
-		})
-	}
-	bodyStr := string(bodyBytes)
-
-	// 19. FortiGate cevabında "Auth=Failed" geçiyorsa başarısız
-	if strings.Contains(bodyStr, "Auth=Failed") {
-		logger.Logger.Warnf("FortiGate authentication failed for user: %s", *user.Username)
-		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Invalid credentials (FortiGate)",
-		})
-	}
-
+	/*
+		// 18. Dönen cevabı okuyalım
+		bodyBytes, err := io.ReadAll(resp.Body)
+		if err != nil {
+			logger.Logger.WithError(err).Error("Failed to read response from FortiGate")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Could not read firewall response",
+			})
+		}
+		bodyStr := string(bodyBytes)
+	*/
+	/*
+		// 19. FortiGate cevabında "Auth=Failed" geçiyorsa başarısız
+		if strings.Contains(bodyStr, "Auth=Failed") {
+			logger.Logger.Warnf("FortiGate authentication failed for user: %s", *user.Username)
+			return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Invalid credentials (FortiGate)",
+			})
+		}
+	*/
 	logger.Logger.Infof("FortiGate authentication succeeded for user: %s", *user.Username)
 
 	// 20. Başarılı yanıt dönelim
