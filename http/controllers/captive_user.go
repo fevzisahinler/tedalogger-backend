@@ -1,5 +1,3 @@
-// http/controllers/captive_user.go
-
 package controllers
 
 import (
@@ -7,23 +5,121 @@ import (
 	"errors"
 	"fmt"
 	"github.com/go-playground/validator/v10"
+	"github.com/gofiber/fiber/v2"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 
+	"tedalogger-backend/config"
 	"tedalogger-backend/db"
 	"tedalogger-backend/http/requests"
 	"tedalogger-backend/http/responses"
 	"tedalogger-backend/logger"
 	"tedalogger-backend/models"
+	"tedalogger-backend/providers/otp"
 	"tedalogger-backend/providers/validation"
 )
 
+// ------------------------------
+// Global OTP Provider
+// ------------------------------
+var otpProvider otp.OTPProvider
+
+func init() {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		logger.Logger.Errorf("Failed to load config: %v", err)
+	}
+
+	// 6 haneli, .env’deki OTP_EXPIRE_SECONDS kadar saniye geçerli
+	// Örnek: OTP_EXPIRE_SECONDS=300 (5 dakika)
+	otpProvider = otp.NewSimpleOTPProvider(6, cfg.OTPExpireSeconds)
+}
+
+func ResendOTP(c *fiber.Ctx) error {
+	type ResendOTPRequest struct {
+		UserID uint `json:"user_id" validate:"required"`
+	}
+
+	var req ResendOTPRequest
+	if err := c.BodyParser(&req); err != nil {
+		logger.Logger.WithError(err).Error("Failed to parse Resend OTP request")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid input",
+		})
+	}
+
+	// Basit validasyon
+	validate := validator.New()
+	if err := validate.Struct(req); err != nil {
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Validation error: " + err.Error(),
+		})
+	}
+
+	// 1. User bulun
+	var user models.CaptiveUser
+	if err := db.DB.Where("id = ?", req.UserID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Logger.Warnf("User not found for ResendOTP, user_id=%d", req.UserID)
+			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "User not found",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to find user for ResendOTP in database")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	logger.Logger.Infof("Resending OTP for user ID: %d", user.ID)
+
+	// 2. Portal bulun
+	var portal models.Portal
+	if err := db.DB.Where("portal_id = ?", user.PortalID).First(&portal).Error; err != nil {
+		logger.Logger.WithError(err).Error("Failed to find Portal for CaptiveUser in ResendOTP")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+	if !portal.OtpEnabled {
+		logger.Logger.Warnf("ResendOTP attempted for portal without OTP enabled: %s", portal.PortalID)
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "OTP is not enabled for this portal",
+		})
+	}
+
+	// 3. OTP tekrar gönder
+	cfg, _ := config.LoadConfig()
+	if err := otpProvider.RequestOTP(&user, cfg); err != nil {
+		logger.Logger.WithError(err).Error("Failed to re-generate/send OTP on ResendOTP")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Failed to send OTP",
+		})
+	}
+
+	return c.JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "OTP resent successfully. Please check your phone.",
+		Data: map[string]interface{}{
+			"user_id": user.ID,
+		},
+	})
+}
+
+// ------------------------------
+// LOGIN
+// ------------------------------
 func LoginCaptiveUser(c *fiber.Ctx) error {
 	var req requests.CaptiveUserLoginRequest
 
@@ -36,7 +132,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 2. Request validasyonlarını çalıştır
+	// 2. Validasyon
 	if err := req.Validate(); err != nil {
 		logger.Logger.WithError(err).Error("Validation failed for Captive User Login request")
 		var ve validator.ValidationErrors
@@ -57,7 +153,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 3. Portal bilgisi al
+	// 3. Portal bilgisi
 	var portal models.Portal
 	if err := db.DB.Where("portal_id = ?", req.PortalID).First(&portal).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -73,7 +169,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 4. Portal'ın loginComponents bilgisini parse et
+	// 4. loginComponents parse et
 	var loginComponents []models.PortalComponent
 	if err := json.Unmarshal(portal.LoginComponents, &loginComponents); err != nil {
 		logger.Logger.WithError(err).Error("Failed to unmarshal LoginComponents")
@@ -83,7 +179,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 5. Zorunlu alanları tespit et
+	// 5. Zorunlu alanları bul
 	requiredFields := make(map[string]bool)
 	for _, component := range loginComponents {
 		normalizedLabel := strings.ToLower(strings.TrimSpace(component.Label))
@@ -92,7 +188,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 6. Zorunlu alanların doldurulup doldurulmadığını kontrol et
+	// 6. Zorunlu alanlar dolu mu?
 	for field := range requiredFields {
 		if _, exists := req.DynamicFields[field]; !exists {
 			logger.Logger.Errorf("Missing required field: %s", field)
@@ -103,11 +199,10 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 7. Beklenmeyen alan var mı diye kontrol et (opsiyonel)
+	// 7. Beklenmeyen alan var mı?
 	for field := range req.DynamicFields {
 		normalizedField := strings.ToLower(strings.TrimSpace(field))
 		if _, exists := requiredFields[normalizedField]; !exists {
-			// Bu durumda opsiyonel alan ekleyebilirsiniz, ama istenmiyorsa hata veriyoruz
 			logger.Logger.Errorf("Unexpected field: %s", field)
 			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 				Error:   true,
@@ -116,11 +211,10 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 8. DB'den kullanıcıyı bulmak için sorgu hazırla
+	// 8. DB'den kullanıcıyı bul
 	var user models.CaptiveUser
 	query := db.DB.Where("portal_id = ?", req.PortalID)
 
-	// 9. DynamicFields => Veritabanı sorgusuna uygula
 	for key, value := range req.DynamicFields {
 		column := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(key)), "-", "_")
 		switch v := value.(type) {
@@ -129,13 +223,11 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 				continue
 			}
 			query = query.Where(fmt.Sprintf("%s = ?", column), v)
-
 		case float64:
+			// JSON parse olduğunda rakamlar float64 gelebiliyor
 			query = query.Where(fmt.Sprintf("%s = ?", column), strconv.FormatFloat(v, 'f', -1, 64))
-
 		case int:
 			query = query.Where(fmt.Sprintf("%s = ?", column), strconv.Itoa(v))
-
 		default:
 			logger.Logger.Errorf("Unsupported type for dynamic field: %s", key)
 			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -145,7 +237,6 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 10. Kullanıcıyı veritabanında ara
 	if err := query.First(&user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			logger.Logger.Warnf("User not found with dynamic fields: %+v", req.DynamicFields)
@@ -161,7 +252,7 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 11. Parola doğrula (bcrypt kullanılmıyor, direkt karşılaştırma)
+	// 9. Parola doğrula
 	if user.Password == nil {
 		logger.Logger.Error("Password is nil for the user")
 		return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
@@ -186,42 +277,39 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 			Message: "Invalid credentials",
 		})
 	}
-
 	logger.Logger.Infof("Local DB user %s authenticated successfully", *user.Username)
 
-	// 12. OTP kontrolü (opsiyonel)
+	// 10. OTP kontrolü (opsiyonel)
 	if portal.OtpEnabled {
-		if user.OTPCode == nil || user.OTPExpiresAt == nil || !user.IsOTPVerified {
-			logger.Logger.Warnf("OTP verification required for user ID: %d", user.ID)
-			return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
+		// OTP üret, DB'ye yaz, SMS gönder
+		cfg, _ := config.LoadConfig()
+		if err := otpProvider.RequestOTP(&user, cfg); err != nil {
+			logger.Logger.WithError(err).Error("Failed to generate/send OTP on login")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
 				Error:   true,
-				Message: "OTP verification required",
+				Message: "Failed to send OTP",
 			})
 		}
+
+		return c.JSON(responses.SuccessResponse{
+			Error:   false,
+			Message: "Login successful, OTP sent. Please verify.",
+			Data: map[string]interface{}{
+				"user_id": user.ID,
+			},
+		})
 	}
 
-	// 13. Son başarılı login zamanını güncelle
+	// OTP devre dışıysa => direkt başarılı login
 	now := time.Now()
 	user.LastLoginAt = &now
 	if err := db.DB.Save(&user).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to update user login timestamp")
-		// hata olsa da devam edebiliriz
+		// hata olsa da devam
 	}
 
-	//-----------------------------------------------------------
-	// FortiGate parametrelerini artık req.FirewallParams'tan çekiyoruz:
-	//-----------------------------------------------------------
+	// FortiGate parametreleri (kısaltılmış)
 	firewallPostURL := req.FirewallParams["post"]
-	magic := req.FirewallParams["magic"]
-	usermac := req.FirewallParams["usermac"]
-	apmac := req.FirewallParams["apmac"]
-	apip := req.FirewallParams["apip"]
-	userip := req.FirewallParams["userip"]
-	ssid := req.FirewallParams["ssid"]
-	apname := req.FirewallParams["apname"]
-	bssid := req.FirewallParams["bssid"]
-
-	// 15. Eğer FW post parametresi yoksa, geri dönüş yapamayız
 	if firewallPostURL == "" {
 		logger.Logger.Warn("Missing 'post' parameter in firewall_params")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -230,71 +318,26 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 16. FortiGate’e bu parametreleri + username/password gönderelim
-	formData := url.Values{}
-	formData.Set("login", "")
-	formData.Set("magic", magic)
-	formData.Set("usermac", usermac)
-	formData.Set("apmac", apmac)
-	formData.Set("apip", apip)
-	formData.Set("userip", userip)
-	formData.Set("ssid", ssid)
-	formData.Set("apname", apname)
-	formData.Set("bssid", bssid)
-	formData.Set("username", *user.Username)
-	formData.Set("password", inputPassword)
-
-	/*
-		// 17. HTTP POST yaparak FortiGate’e bu verileri iletelim
-		resp, err := http.PostForm(firewallPostURL, formData)
-		if err != nil {
-			logger.Logger.WithError(err).Error("Failed to POST data to FortiGate")
-			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-				Error:   true,
-				Message: "Could not contact firewall",
-			})
-		}
-		defer resp.Body.Close()
-	*/
-
-	/*
-		// 18. Dönen cevabı okuyalım
-		bodyBytes, err := io.ReadAll(resp.Body)
-		if err != nil {
-			logger.Logger.WithError(err).Error("Failed to read response from FortiGate")
-			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-				Error:   true,
-				Message: "Could not read firewall response",
-			})
-		}
-		bodyStr := string(bodyBytes)
-	*/
-	/*
-		// 19. FortiGate cevabında "Auth=Failed" geçiyorsa başarısız
-		if strings.Contains(bodyStr, "Auth=Failed") {
-			logger.Logger.Warnf("FortiGate authentication failed for user: %s", *user.Username)
-			return c.Status(http.StatusUnauthorized).JSON(responses.ErrorResponse{
-				Error:   true,
-				Message: "Invalid credentials (FortiGate)",
-			})
-		}
-	*/
+	// Normalde FortiGate'e HTTP Post atılabilir. (formData vs...)
 	logger.Logger.Infof("FortiGate authentication succeeded for user: %s", *user.Username)
 
-	// 20. Başarılı yanıt dönelim
+	// 20. Başarılı yanıt
 	return c.JSON(responses.SuccessResponse{
 		Error:   false,
-		Message: "Login successful",
+		Message: "Login successful (no OTP required)",
 		Data: map[string]interface{}{
 			"user_id": user.ID,
 		},
 	})
 }
 
+// ------------------------------
+// REGISTER
+// ------------------------------
 func RegisterCaptiveUser(c *fiber.Ctx) error {
 	var req requests.CaptiveUserRegisterRequest
 
-	// 1. İstek gövdesinden verileri alıyoruz
+	// 1. İstek gövdesinden verileri al
 	if err := c.BodyParser(&req); err != nil {
 		logger.Logger.WithError(err).Error("Failed to parse Captive User register request")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -303,7 +346,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 2. Request içerisindeki validasyonları çalıştırıyoruz
+	// 2. Validasyon
 	if err := req.Validate(); err != nil {
 		logger.Logger.WithError(err).Error("Validation failed for Captive User register request")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -312,7 +355,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 3. İlgili portal'ı çekiyoruz
+	// 3. Portal bilgisi
 	var portal models.Portal
 	if err := db.DB.Where("portal_id = ?", req.PortalID).First(&portal).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -328,7 +371,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 4. Portal içerisindeki signupComponents (JSON) bilgisini alıp parse ediyoruz
+	// 4. signupComponents parse
 	var signupComponents []models.PortalComponent
 	if err := json.Unmarshal(portal.SignupComponents, &signupComponents); err != nil {
 		logger.Logger.WithError(err).Error("Failed to unmarshal SignupComponents")
@@ -338,7 +381,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 5. Gerekli alanların toplanması (requiredFields vb.)
+	// 5. Gerekli alanlar
 	requiredFields := make(map[string]bool)
 	tcknValidationRequired := false
 	tcknData := struct {
@@ -354,10 +397,9 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 			requiredFields[normalizedLabel] = true
 		}
 
-		// TCKN Validation (Opsiyonel senaryo)
+		// TCKN Validation isteniyorsa
 		if normalizedLabel == "tckn" && component.Required {
 			tcknValidationRequired = true
-
 			if val, exists := req.DynamicFields["tckn"]; exists {
 				if str, ok := val.(string); ok {
 					tcknData.TCKN = strings.TrimSpace(str)
@@ -396,7 +438,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 
 	logger.Logger.Infof("Received dynamic_fields for PortalID %s", req.PortalID)
 
-	// 6. Gerekli alanlar doldurulmuş mu?
+	// 6. Gerekli alanlar doldurulmuş mu
 	for field := range requiredFields {
 		if _, exists := req.DynamicFields[field]; !exists {
 			logger.Logger.Errorf("Missing required field: %s", field)
@@ -407,7 +449,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 7. (Opsiyonel) TCKN Doğrulama
+	// 7. TCKN doğrulaması (opsiyonel)
 	if tcknValidationRequired {
 		if tcknData.TCKN == "" || tcknData.FirstName == "" || tcknData.LastName == "" || tcknData.BirthYear == 0 {
 			logger.Logger.Error("Missing information for ID verification")
@@ -431,7 +473,6 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 				Message: "Error during ID verification",
 			})
 		}
-
 		if !valid {
 			logger.Logger.Warnf("ID verification failed for TCKN: %s", tcknData.TCKN)
 			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -441,28 +482,25 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 8. Dynamic Fields içindeki değerleri alıyoruz
+	// 8. Dynamic Fields’i parse
 	firstName := ""
 	if val, exists := req.DynamicFields["first-name"]; exists {
 		if str, ok := val.(string); ok {
 			firstName = strings.TrimSpace(str)
 		}
 	}
-
 	lastName := ""
 	if val, exists := req.DynamicFields["last-name"]; exists {
 		if str, ok := val.(string); ok {
 			lastName = strings.TrimSpace(str)
 		}
 	}
-
 	tckn := ""
 	if val, exists := req.DynamicFields["tckn"]; exists {
 		if str, ok := val.(string); ok {
 			tckn = strings.TrimSpace(str)
 		}
 	}
-
 	var birthYearPtr *int
 	if val, exists := req.DynamicFields["birth-year"]; exists {
 		switch v := val.(type) {
@@ -479,21 +517,18 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 			}
 		}
 	}
-
 	username := ""
 	if val, exists := req.DynamicFields["username"]; exists {
 		if str, ok := val.(string); ok {
 			username = strings.TrimSpace(str)
 		}
 	}
-
 	email := ""
 	if val, exists := req.DynamicFields["email"]; exists {
 		if str, ok := val.(string); ok {
 			email = strings.TrimSpace(str)
 		}
 	}
-
 	var phonePtr *string
 	if val, exists := req.DynamicFields["phone-number"]; exists {
 		if str, ok := val.(string); ok {
@@ -505,60 +540,37 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 9. Parolayı cleartext almak istiyorsak:
+	// 9. Parola
 	passwordRaw := ""
 	if val, exists := req.DynamicFields["password"]; exists {
 		if str, ok := val.(string); ok {
 			passwordRaw = strings.TrimSpace(str)
 		}
 	}
-	// Parolayı herhangi bir hash işlemine tabii tutmadan olduğu gibi saklıyoruz (Güvenlik açığı!).
 	var cleartextPassword *string
 	if passwordRaw != "" {
 		cleartextPassword = &passwordRaw
 	}
 
-	// 10. OTP ayarları (varsa)
-	var otpCode *string
-	var otpExpiresAt *time.Time
-	if portal.OtpEnabled {
-		// Örnek olarak sabit OTP kodu
-		fixedOTP := "1234"
-		otpCode = &fixedOTP
-
-		location, err := time.LoadLocation("Europe/Istanbul")
-		if err != nil {
-			logger.Logger.WithError(err).Error("Failed to load Turkey time zone")
-			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
-				Error:   true,
-				Message: "Failed to process time zone",
-			})
-		}
-		expiry := time.Now().In(location).Add(5 * time.Minute)
-		otpExpiresAt = &expiry
-
-		logger.Logger.Infof("Fixed OTP code set to: %s for user", *otpCode)
-	}
-
-	// 11. CaptiveUser modelini oluşturalım (PostgreSQL tablosuna kaydedeceğiz)
+	// 10. CaptiveUser nesnesi
 	captiveUser := models.CaptiveUser{
 		PortalID:      req.PortalID,
 		TCKN:          &tckn,
 		FirstName:     &firstName,
 		LastName:      &lastName,
 		BirthDate:     birthYearPtr,
-		Username:      nil,               // Bunu birazdan dolduracağız
-		Password:      cleartextPassword, // Artık cleartext saklanıyor (UYARI: Güvenlik açığı!)
+		Username:      nil,               // sonra dolduracağız
+		Password:      cleartextPassword, // plaintext saklanıyor (demo amaçlı)
 		Email:         &email,
 		Phone:         phonePtr,
 		RadiusGroup:   portal.RadiusGroupName,
 		NASName:       portal.NasName,
-		OTPCode:       otpCode,
-		OTPExpiresAt:  otpExpiresAt,
+		OTPCode:       nil,
+		OTPExpiresAt:  nil,
 		IsOTPVerified: false,
 	}
 
-	// 12. PostgreSQL transaction başlat
+	// 11. Transaction
 	tx := db.DB.Begin()
 	if tx.Error != nil {
 		logger.Logger.WithError(tx.Error).Error("Failed to begin transaction")
@@ -568,7 +580,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 13. CaptiveUser tablosuna kaydet
+	// 12. Kaydet
 	if err := tx.Create(&captiveUser).Error; err != nil {
 		tx.Rollback()
 		logger.Logger.WithError(err).Error("Failed to create CaptiveUser in PostgreSQL")
@@ -577,18 +589,15 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 			Message: "Failed to create user",
 		})
 	}
-
 	logger.Logger.Infof("Created CaptiveUser with ID: %d", captiveUser.ID)
 
-	// Eğer bir username girmemişse ID'yi username olarak atayabiliriz
+	// Username boş ise ID'yi atayalım
 	if username == "" {
 		userIDStr := strconv.FormatUint(uint64(captiveUser.ID), 10)
 		captiveUser.Username = &userIDStr
 	} else {
 		captiveUser.Username = &username
 	}
-
-	// Username güncellemesi
 	if err := tx.Save(&captiveUser).Error; err != nil {
 		tx.Rollback()
 		logger.Logger.WithError(err).Error("Failed to set Username for CaptiveUser")
@@ -598,7 +607,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 14. Radius tarafında NAS'ı bulalım
+	// 13. Radius entegrasyonu (kısaltılmış örnek)
 	var nas models.NAS
 	if err := db.RadiusDB.Where("nasname = ?", portal.NasName).First(&nas).Error; err != nil {
 		tx.Rollback()
@@ -616,9 +625,8 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 15. Radius'ta radcheck tablosuna cleartext password ekliyoruz
+	// radcheck tablosuna Cleartext-Password yaz
 	if captiveUser.Password != nil && *captiveUser.Password != "" {
-		// Artık bcrypt ile hashlemeden, doğrudan cleartext password kaydediyoruz
 		if err := db.RadiusDB.Exec(`
 			INSERT INTO radcheck (username, attribute, op, value)
 			VALUES (?, 'Cleartext-Password', ':=', ?)`,
@@ -632,7 +640,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 16. NAS IP adresi kontrolü
+	// NAS-IP-Address
 	if nas.Nasname != "" {
 		if err := db.RadiusDB.Exec(`
 			INSERT INTO radcheck (username, attribute, op, value)
@@ -647,7 +655,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 17. Kullanıcıyı Radius grubuna ekliyoruz
+	// radusergroup
 	if captiveUser.RadiusGroup != "" {
 		if err := db.RadiusDB.Exec(`
 			INSERT INTO radusergroup (username, groupname, priority)
@@ -662,7 +670,7 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		}
 	}
 
-	// 18. PostgreSQL transaction commit
+	// 14. Commit
 	if err := tx.Commit().Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to commit transaction for CaptiveUser registration")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -671,25 +679,36 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// 19. OTP varsa, kullanıcıya OTP gönderildiğini belirtiyoruz
+	// 15. Dinamik OTP akışı
 	if portal.OtpEnabled {
-		logger.Logger.Info("Fixed OTP sent to user (simulation)")
+		logger.Logger.Infof("Portal OTP is enabled, generating dynamic OTP for user ID=%d", captiveUser.ID)
+
+		cfg, _ := config.LoadConfig()
+		if err := otpProvider.RequestOTP(&captiveUser, cfg); err != nil {
+			logger.Logger.WithError(err).Error("Failed to generate/send OTP on register")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to send OTP",
+			})
+		}
 
 		return c.Status(http.StatusOK).JSON(responses.SuccessResponse{
 			Error:   false,
-			Message: "OTP sent. Please enter the OTP code.",
+			Message: "User created. OTP sent. Please enter the OTP code.",
 			Data:    map[string]interface{}{"user_id": captiveUser.ID},
 		})
 	}
 
-	// OTP yoksa direkt başarılı yanıt dönüyoruz
 	return c.Status(http.StatusCreated).JSON(responses.SuccessResponse{
 		Error:   false,
-		Message: "User created successfully",
+		Message: "User created successfully (no OTP required)",
 		Data:    map[string]interface{}{"user_id": captiveUser.ID},
 	})
 }
 
+// ------------------------------
+// VERIFY REGISTER OTP
+// ------------------------------
 func VerifyOTP(c *fiber.Ctx) error {
 	var req requests.VerifyOTPRequest
 
@@ -755,23 +774,19 @@ func VerifyOTP(c *fiber.Ctx) error {
 	actualOTP := *user.OTPCode
 	otpExpiry := *user.OTPExpiresAt
 
-	if providedOTP != actualOTP {
-		logger.Logger.Warnf("OTP verification failed for user ID: %d", user.ID)
+	// OTP Doğrulama
+	if !otpProvider.ValidateOTP(providedOTP, actualOTP, otpExpiry) {
+		logger.Logger.Warnf("OTP verification failed or expired for user ID: %d", user.ID)
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 			Error:   true,
 			Message: "OTP verification failed or expired",
 		})
 	}
 
-	if time.Now().After(otpExpiry) {
-		logger.Logger.Warnf("OTP expired for user ID: %d", user.ID)
-		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "OTP verification failed or expired",
-		})
-	}
-
+	// Doğrulama başarılı
 	user.IsOTPVerified = true
+	user.OTPCode = nil
+	user.OTPExpiresAt = nil
 	if err := db.DB.Save(&user).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to update OTP verification status")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -781,7 +796,6 @@ func VerifyOTP(c *fiber.Ctx) error {
 	}
 
 	logger.Logger.Infof("OTP successfully verified for user ID: %d", user.ID)
-
 	return c.JSON(responses.SuccessResponse{
 		Error:   false,
 		Message: "OTP successfully verified",
@@ -789,6 +803,9 @@ func VerifyOTP(c *fiber.Ctx) error {
 	})
 }
 
+// ------------------------------
+// VERIFY LOGIN OTP
+// ------------------------------
 func VerifyLoginOTP(c *fiber.Ctx) error {
 	var req requests.VerifyOTPRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -851,31 +868,20 @@ func VerifyLoginOTP(c *fiber.Ctx) error {
 
 	providedOTP := strings.TrimSpace(req.OTP)
 	actualOTP := *user.OTPCode
-	//otpExpiry := *user.OTPExpiresAt
 
-	if providedOTP != actualOTP {
-		logger.Logger.Warnf("OTP verification failed for user ID: %d", user.ID)
+	// OTP Doğrulama (expire süresini kontrol edebilirsiniz)
+	if !otpProvider.ValidateOTP(providedOTP, actualOTP, *user.OTPExpiresAt) {
+		logger.Logger.Warnf("OTP verification failed or expired for user ID: %d", user.ID)
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 			Error:   true,
 			Message: "OTP verification failed or expired",
 		})
 	}
 
-	/*
-		if time.Now().After(otpExpiry) {
-			logger.Logger.Warnf("OTP expired for user ID: %d", user.ID)
-			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
-				Error:   true,
-				Message: "OTP verification failed or expired",
-			})
-		}
-	*/
-
-	// Doğrulama başarılı, OTPCode ve OTPExpiresAt alanlarını temizle
+	// Doğrulama başarılı
 	user.IsOTPVerified = true
 	user.OTPCode = nil
 	user.OTPExpiresAt = nil
-
 	if err := db.DB.Save(&user).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to update OTP verification status")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{

@@ -2,6 +2,7 @@ package config
 
 import (
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -27,11 +28,15 @@ type Config struct {
 	RADIUSServerIP     string
 	RADIUSServerPort   string
 	RADIUSSharedSecret string
+
+	OTPSendUser          string
+	OTPSendPassword      string
+	PostaGuverciniSMSURL string
+	OTPExpireSeconds     int
 }
 
 func LoadConfig() (*Config, error) {
-	if err := godotenv.Load(); err != nil {
-	}
+	_ = godotenv.Load()
 
 	config := &Config{
 		PGHost:                os.Getenv("PG_HOST"),
@@ -54,6 +59,16 @@ func LoadConfig() (*Config, error) {
 		RADIUSServerIP:     os.Getenv("RADIUS_SERVER_IP"),
 		RADIUSServerPort:   os.Getenv("RADIUS_SERVER_PORT"),
 		RADIUSSharedSecret: os.Getenv("RADIUS_SHARED_SECRET"),
+
+		OTPSendUser:          os.Getenv("OTP_SEND_USER"),
+		OTPSendPassword:      os.Getenv("OTP_SEND_PASSWORD"),
+		PostaGuverciniSMSURL: os.Getenv("POSTAGUVERCINI_SMS_URL"),
+	}
+
+	if val, err := strconv.Atoi(os.Getenv("OTP_EXPIRE_SECONDS")); err == nil {
+		config.OTPExpireSeconds = val
+	} else {
+		config.OTPExpireSeconds = 20
 	}
 
 	return config, nil
