@@ -240,8 +240,9 @@ func CreatePortal(c *fiber.Ctx) error {
 
 // UpdatePortal
 func UpdatePortal(c *fiber.Ctx) error {
+	// 1) URL parametresinden ID’yi al
 	id := c.Params("id")
-	portalID, err := strconv.Atoi(id)
+	portalIDInt, err := strconv.Atoi(id)
 	if err != nil {
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 			Error:   true,
@@ -249,18 +250,99 @@ func UpdatePortal(c *fiber.Ctx) error {
 		})
 	}
 
-	// Parse multipart form for potential file uploads
-	if form, err := c.MultipartForm(); err == nil {
-		if err := c.BodyParser(&requests.CreateOrUpdatePortalRequest{}); err != nil {
-			logger.Logger.WithError(err).Error("Failed to parse Portal update request (multipart form scenario)")
+	// 2) Multipart formu al
+	form, formErr := c.MultipartForm()
+
+	// request struct’ımız
+	var req requests.CreateOrUpdatePortalRequest
+
+	if formErr == nil && form != nil {
+		// Eğer multipart form gelmişse,
+		// alanları manuel olarak parse edelim (CreatePortal ile aynı mantık)
+
+		// 2a) Metinsel alanları oku
+		if val, ok := form.Value["portalID"]; ok && len(val) > 0 {
+			req.PortalID = val[0]
+		}
+		if val, ok := form.Value["name"]; ok && len(val) > 0 {
+			req.Name = val[0]
+		}
+		if val, ok := form.Value["radiusGroupName"]; ok && len(val) > 0 {
+			req.RadiusGroupName = val[0]
+		}
+		if val, ok := form.Value["nasName"]; ok && len(val) > 0 {
+			req.NasName = val[0]
+		}
+
+		// 2b) JSON string olarak gelen alanları parse et
+		if val, ok := form.Value["loginComponents"]; ok && len(val) > 0 {
+			if err := json.Unmarshal([]byte(val[0]), &req.LoginComponents); err != nil {
+				logger.Logger.WithError(err).Error("Failed to parse loginComponents JSON for UpdatePortal")
+				return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+					Error:   true,
+					Message: "Invalid loginComponents JSON",
+				})
+			}
+		}
+		if val, ok := form.Value["signupComponents"]; ok && len(val) > 0 {
+			if err := json.Unmarshal([]byte(val[0]), &req.SignupComponents); err != nil {
+				logger.Logger.WithError(err).Error("Failed to parse signupComponents JSON for UpdatePortal")
+				return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+					Error:   true,
+					Message: "Invalid signupComponents JSON",
+				})
+			}
+		}
+		if val, ok := form.Value["theme"]; ok && len(val) > 0 {
+			if err := json.Unmarshal([]byte(val[0]), &req.Theme); err != nil {
+				logger.Logger.WithError(err).Error("Failed to parse theme JSON for UpdatePortal")
+				return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+					Error:   true,
+					Message: "Invalid theme JSON",
+				})
+			}
+		}
+
+		// 2c) Boolean alan (otpEnabled)
+		if val, ok := form.Value["otpEnabled"]; ok && len(val) > 0 {
+			if val[0] == "true" {
+				req.OtpEnabled = true
+			} else {
+				req.OtpEnabled = false
+			}
+		}
+
+		// 2d) Dosya yüklemeleri (logo, background)
+		logoStorage := os.Getenv("LOGO_STORAGE")
+		uploadedLogo, err := handleFileUpload(c, "logo", logoStorage)
+		if err != nil {
+			logger.Logger.WithError(err).Error("Logo file upload failed (update)")
 			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 				Error:   true,
-				Message: "Invalid input",
+				Message: err.Error(),
 			})
 		}
-		_ = form
+		if uploadedLogo != "" {
+			req.Logo = uploadedLogo
+		}
+
+		backgroundStorage := os.Getenv("BACKGROUND_STORAGE")
+		uploadedBackground, err := handleFileUpload(c, "background", backgroundStorage)
+		if err != nil {
+			logger.Logger.WithError(err).Error("Background file upload failed (update)")
+			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: err.Error(),
+			})
+		}
+		if uploadedBackground != "" {
+			req.Background = uploadedBackground
+		}
+
 	} else {
-		if err := c.BodyParser(&requests.CreateOrUpdatePortalRequest{}); err != nil {
+		// Eğer multipart form yoksa (JSON body gelmiş olabilir)
+		// JSON parse edelim
+		if err := c.BodyParser(&req); err != nil {
 			logger.Logger.WithError(err).Error("Failed to parse Portal update request (JSON scenario)")
 			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
 				Error:   true,
@@ -269,15 +351,7 @@ func UpdatePortal(c *fiber.Ctx) error {
 		}
 	}
 
-	var req requests.CreateOrUpdatePortalRequest
-	if err := c.BodyParser(&req); err != nil {
-		logger.Logger.WithError(err).Error("Failed to parse Portal update request into struct")
-		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: "Invalid input",
-		})
-	}
-
+	// 3) Validasyon
 	if err := req.Validate(); err != nil {
 		logger.Logger.WithError(err).Error("Validation failed for Portal update request")
 		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
@@ -286,8 +360,9 @@ func UpdatePortal(c *fiber.Ctx) error {
 		})
 	}
 
+	// 4) Mevcut kaydı DB’den çek
 	var portal models.Portal
-	if err := db.DB.First(&portal, portalID).Error; err != nil {
+	if err := db.DB.First(&portal, portalIDInt).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
 				Error:   true,
@@ -300,29 +375,24 @@ func UpdatePortal(c *fiber.Ctx) error {
 		})
 	}
 
-	// Handle logo file upload
-	logoStorage := os.Getenv("LOGO_STORAGE")
-	uploadedLogo, err := handleFileUpload(c, "logo", logoStorage)
-	if err != nil {
-		logger.Logger.WithError(err).Error("Logo file upload failed (update)")
-		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: err.Error(),
-		})
+	// 5) Güncellenecek alanları ayarla
+
+	// Metinsel ve boolean alanlar
+	portal.PortalID = req.PortalID
+	portal.Name = req.Name
+	portal.RadiusGroupName = req.RadiusGroupName
+	portal.NasName = req.NasName
+	portal.OtpEnabled = req.OtpEnabled
+
+	// logo, background
+	if req.Logo != "" {
+		portal.Logo = req.Logo
+	}
+	if req.Background != "" {
+		portal.Background = req.Background
 	}
 
-	// Handle background file upload
-	backgroundStorage := os.Getenv("BACKGROUND_STORAGE")
-	uploadedBackground, err := handleFileUpload(c, "background", backgroundStorage)
-	if err != nil {
-		logger.Logger.WithError(err).Error("Background file upload failed (update)")
-		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
-			Error:   true,
-			Message: err.Error(),
-		})
-	}
-
-	// Marshal login components
+	// loginComponents, signupComponents, theme => JSON marshal
 	loginComponentsJSON, err := json.Marshal(req.LoginComponents)
 	if err != nil {
 		logger.Logger.WithError(err).Error("Failed to marshal loginComponents on update")
@@ -332,7 +402,6 @@ func UpdatePortal(c *fiber.Ctx) error {
 		})
 	}
 
-	// Marshal signup components
 	signupComponentsJSON, err := json.Marshal(req.SignupComponents)
 	if err != nil {
 		logger.Logger.WithError(err).Error("Failed to marshal signupComponents on update")
@@ -342,7 +411,6 @@ func UpdatePortal(c *fiber.Ctx) error {
 		})
 	}
 
-	// Marshal theme
 	themeJSON, err := json.Marshal(req.Theme)
 	if err != nil {
 		logger.Logger.WithError(err).Error("Failed to marshal theme on update")
@@ -352,26 +420,11 @@ func UpdatePortal(c *fiber.Ctx) error {
 		})
 	}
 
-	// Update fields
-	portal.PortalID = req.PortalID
-	portal.Name = req.Name
-	portal.RadiusGroupName = req.RadiusGroupName
-	portal.NasName = req.NasName
 	portal.LoginComponents = loginComponentsJSON
 	portal.SignupComponents = signupComponentsJSON
 	portal.Theme = themeJSON
-	portal.OtpEnabled = req.OtpEnabled
 
-	// If a new file was uploaded for logo, update it; else keep old one
-	if uploadedLogo != "" {
-		portal.Logo = uploadedLogo
-	}
-
-	// If a new file was uploaded for background, update it; else keep old one
-	if uploadedBackground != "" {
-		portal.Background = uploadedBackground
-	}
-
+	// 6) DB’de kaydet
 	if err := db.DB.Save(&portal).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to update Portal in PostgreSQL")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -380,6 +433,7 @@ func UpdatePortal(c *fiber.Ctx) error {
 		})
 	}
 
+	// 7) Başarılı dönüş
 	return c.JSON(responses.SuccessResponse{
 		Error:   false,
 		Message: "Portal updated successfully",
