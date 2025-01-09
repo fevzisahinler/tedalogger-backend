@@ -33,6 +33,9 @@ type Config struct {
 	OTPSendPassword      string
 	PostaGuverciniSMSURL string
 	OTPExpireSeconds     int
+
+	LOGO_STORAGE       string
+	BACKGROUND_STORAGE string
 }
 
 func LoadConfig() (*Config, error) {
@@ -63,6 +66,8 @@ func LoadConfig() (*Config, error) {
 		OTPSendUser:          os.Getenv("OTP_SEND_USER"),
 		OTPSendPassword:      os.Getenv("OTP_SEND_PASSWORD"),
 		PostaGuverciniSMSURL: os.Getenv("POSTAGUVERCINI_SMS_URL"),
+		BACKGROUND_STORAGE:   os.Getenv("BACKGROUND_STORAGE"),
+		LOGO_STORAGE:         os.Getenv("LOGO_STORAGE"),
 	}
 
 	if val, err := strconv.Atoi(os.Getenv("OTP_EXPIRE_SECONDS")); err == nil {

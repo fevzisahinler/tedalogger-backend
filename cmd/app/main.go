@@ -41,6 +41,12 @@ func main() {
 		ErrorHandler: middleware.ErrorHandler,
 	})
 
+	logoDir := os.Getenv("LOGO_STORAGE")
+	backgroundDir := os.Getenv("BACKGROUND_STORAGE")
+
+	app.Static("/logos", logoDir)
+	app.Static("/backgrounds", backgroundDir)
+
 	app.Use(cors.New())
 	app.Use(apmfiber.Middleware())
 
