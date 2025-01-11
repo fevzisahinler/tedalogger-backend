@@ -33,9 +33,6 @@ func init() {
 	if err != nil {
 		logger.Logger.Errorf("Failed to load config: %v", err)
 	}
-
-	// 6 haneli, .env’deki OTP_EXPIRE_SECONDS kadar saniye geçerli
-	// Örnek: OTP_EXPIRE_SECONDS=300 (5 dakika)
 	otpProvider = otp.NewSimpleOTPProvider(6, cfg.OTPExpireSeconds)
 }
 
