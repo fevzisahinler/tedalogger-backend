@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/go-playground/validator/v10"
 	"github.com/gofiber/fiber/v2"
+	"golang.org/x/crypto/bcrypt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -23,9 +24,6 @@ import (
 	"tedalogger-backend/providers/validation"
 )
 
-// ------------------------------
-// Global OTP Provider
-// ------------------------------
 var otpProvider otp.OTPProvider
 
 func init() {
@@ -114,9 +112,6 @@ func ResendOTP(c *fiber.Ctx) error {
 	})
 }
 
-// ------------------------------
-// LOGIN
-// ------------------------------
 func LoginCaptiveUser(c *fiber.Ctx) error {
 	var req requests.CaptiveUserLoginRequest
 
@@ -328,9 +323,6 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 	})
 }
 
-// ------------------------------
-// REGISTER
-// ------------------------------
 func RegisterCaptiveUser(c *fiber.Ctx) error {
 	var req requests.CaptiveUserRegisterRequest
 
@@ -703,9 +695,6 @@ func RegisterCaptiveUser(c *fiber.Ctx) error {
 	})
 }
 
-// ------------------------------
-// VERIFY REGISTER OTP
-// ------------------------------
 func VerifyOTP(c *fiber.Ctx) error {
 	var req requests.VerifyOTPRequest
 
@@ -800,9 +789,6 @@ func VerifyOTP(c *fiber.Ctx) error {
 	})
 }
 
-// ------------------------------
-// VERIFY LOGIN OTP
-// ------------------------------
 func VerifyLoginOTP(c *fiber.Ctx) error {
 	var req requests.VerifyOTPRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -892,5 +878,755 @@ func VerifyLoginOTP(c *fiber.Ctx) error {
 		Error:   false,
 		Message: "OTP successfully verified",
 		Data:    map[string]interface{}{"user_id": user.ID},
+	})
+}
+
+func CreateCaptiveUser(c *fiber.Ctx) error {
+	var req requests.CaptiveUserRegisterRequest
+
+	// 1. İstek Gövdesini Parse Et
+	if err := c.BodyParser(&req); err != nil {
+		logger.Logger.WithError(err).Error("Failed to parse CreateCaptiveUser request")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid input",
+		})
+	}
+
+	// 2. Validasyon Yap
+	if err := req.Validate(); err != nil {
+		logger.Logger.WithError(err).Error("Validation failed for CreateCaptiveUser request")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Validation error: " + err.Error(),
+		})
+	}
+
+	// 3. Portal Bilgisini Al
+	var portal models.Portal
+	if err := db.DB.Where("portal_id = ?", req.PortalID).First(&portal).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Logger.Errorf("Portal not found with ID: %s", req.PortalID)
+			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Portal not found",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to find Portal in database")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	// 4. SignupComponents Parse Et
+	var signupComponents []models.PortalComponent
+	if err := json.Unmarshal(portal.SignupComponents, &signupComponents); err != nil {
+		logger.Logger.WithError(err).Error("Failed to unmarshal SignupComponents")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Error processing portal components",
+		})
+	}
+
+	// 5. Gerekli Alanları Belirle
+	requiredFields := make(map[string]bool)
+	for _, comp := range signupComponents {
+		if comp.Required {
+			requiredFields[strings.ToLower(strings.TrimSpace(comp.Label))] = true
+		}
+	}
+
+	// 6. Gerekli Alanların Var Olduğunu Kontrol Et
+	for rf := range requiredFields {
+		if _, exists := req.DynamicFields[rf]; !exists {
+			logger.Logger.Errorf("Missing required field: %s", rf)
+			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: fmt.Sprintf("Missing required field: %s", rf),
+			})
+		}
+	}
+
+	// 7. CaptiveUser Modelini Oluştur
+	captiveUser := models.CaptiveUser{
+		PortalID:      req.PortalID,
+		IsOTPVerified: true,
+	}
+
+	// 8. Dynamic Fields'i İşle
+	var cleartextPassword string
+	for key, val := range req.DynamicFields {
+		fieldName := strings.ToLower(strings.TrimSpace(key))
+
+		switch fieldName {
+		case "first-name":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				captiveUser.FirstName = &strVal
+			}
+		case "last-name":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				captiveUser.LastName = &strVal
+			}
+		case "tckn":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				captiveUser.TCKN = &strVal
+			}
+		case "birth-year":
+			switch typedVal := val.(type) {
+			case float64:
+				y := int(typedVal)
+				captiveUser.BirthDate = &y
+			case int:
+				captiveUser.BirthDate = &typedVal
+			case string:
+				if y, err := strconv.Atoi(typedVal); err == nil {
+					captiveUser.BirthDate = &y
+				}
+			}
+		case "username":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				if strVal != "" {
+					captiveUser.Username = &strVal
+				}
+			}
+		case "password":
+			if strVal, ok := val.(string); ok && strVal != "" {
+				cleartextPassword = strVal
+				// Hash'li halini captive_user tablosunda sakla
+				hashed, err := bcrypt.GenerateFromPassword([]byte(strVal), bcrypt.DefaultCost)
+				if err != nil {
+					logger.Logger.WithError(err).Error("Failed to hash password")
+					return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+						Error:   true,
+						Message: "Error processing password",
+					})
+				}
+				hashedStr := string(hashed)
+				captiveUser.Password = &hashedStr
+			}
+		case "email":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				captiveUser.Email = &strVal
+			}
+		case "phone", "phone-number":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				captiveUser.Phone = &strVal
+			}
+		case "nas-name":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				captiveUser.NASName = strVal
+			}
+		case "radius-group":
+
+		default:
+			logger.Logger.Infof("Unhandled field (Create) -> %s: %v", fieldName, val)
+		}
+	}
+
+	if portal.RadiusGroupName != "" {
+		captiveUser.RadiusGroup = portal.RadiusGroupName
+	}
+	// 9. Transaction Başlat (PostgreSQL ve RadiusDB için)
+	tx := db.DB.Begin()
+	if tx.Error != nil {
+		logger.Logger.WithError(tx.Error).Error("Failed to begin transaction for CreateCaptiveUser")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Transaction error",
+		})
+	}
+
+	if err := tx.Create(&captiveUser).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to create CaptiveUser in DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Failed to create user",
+		})
+	}
+
+	logger.Logger.Infof("Created CaptiveUser with ID: %d", captiveUser.ID)
+
+	// 11. RadiusDB Transaction Başlat
+	radiusTx := db.RadiusDB.Begin()
+	if radiusTx.Error != nil {
+		tx.Rollback()
+		logger.Logger.WithError(radiusTx.Error).Error("Failed to begin radius transaction")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Radius transaction error",
+		})
+	}
+
+	if captiveUser.Username != nil && cleartextPassword != "" {
+		if err := radiusTx.Exec(`
+			INSERT INTO radcheck (username, attribute, op, value)
+			VALUES (?, 'Cleartext-Password', ':=', ?)`,
+			*captiveUser.Username, cleartextPassword).Error; err != nil {
+			radiusTx.Rollback()
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to add user to radcheck (password)")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to add user to Radius authentication",
+			})
+		}
+	}
+
+	nasIP := portal.NasName // Portal modelinizde NasName alanının doğru şekilde tanımlandığını varsayıyoruz
+	if nasIP != "" && captiveUser.Username != nil {
+		if err := radiusTx.Exec(`
+			INSERT INTO radcheck (username, attribute, op, value)
+			VALUES (?, 'NAS-IP-Address', '==', ?)`,
+			*captiveUser.Username, nasIP).Error; err != nil {
+			radiusTx.Rollback()
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to add user to radcheck (NAS-IP-Address)")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to associate user with NAS in Radius",
+			})
+		}
+	}
+
+	if portal.RadiusGroupName != "" && captiveUser.Username != nil {
+		if err := radiusTx.Exec(`
+			INSERT INTO radusergroup (username, groupname, priority)
+			VALUES (?, ?, 1)`,
+			*captiveUser.Username, portal.RadiusGroupName).Error; err != nil {
+			radiusTx.Rollback()
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to add user to radusergroup")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to assign user to Radius group",
+			})
+		}
+	}
+
+	// 15. RadiusDB Transaction'ını Commit Et
+	if err := radiusTx.Commit().Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to commit radius transaction")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Failed to commit radius transaction",
+		})
+	}
+
+	// 16. PostgreSQL Transaction'ını Commit Et
+	if err := tx.Commit().Error; err != nil {
+		logger.Logger.WithError(err).Error("Failed to commit transaction for CreateCaptiveUser")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Transaction commit error",
+		})
+	}
+
+	// 17. Başarılı Yanıt Dön
+	return c.Status(http.StatusCreated).JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "User created successfully",
+		Data: map[string]interface{}{
+			"user_id":         captiveUser.ID,
+			"is_otp_verified": captiveUser.IsOTPVerified,
+		},
+	})
+}
+
+func GetCaptiveUser(c *fiber.Ctx) error {
+	idParam := c.Params("id")
+	if idParam == "" {
+		logger.Logger.Error("Missing user ID param in GetCaptiveUser")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "User ID parameter is required",
+		})
+	}
+
+	userID, err := strconv.Atoi(idParam)
+	if err != nil {
+		logger.Logger.WithError(err).Error("Invalid user ID param in GetCaptiveUser")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid user ID",
+		})
+	}
+
+	var user models.CaptiveUser
+	if err := db.DB.Where("id = ?", userID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Logger.Warnf("User not found with ID: %d", userID)
+			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "User not found",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to get CaptiveUser from DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	return c.JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "User retrieved successfully",
+		Data:    user,
+	})
+}
+
+func UpdateCaptiveUser(c *fiber.Ctx) error {
+	idParam := c.Params("id")
+	if idParam == "" {
+		logger.Logger.Error("Missing user ID param in UpdateCaptiveUser")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "User ID parameter is required",
+		})
+	}
+
+	userID, err := strconv.Atoi(idParam)
+	if err != nil {
+		logger.Logger.WithError(err).Error("Invalid user ID param in UpdateCaptiveUser")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid user ID",
+		})
+	}
+
+	var existingUser models.CaptiveUser
+	if err := db.DB.Where("id = ?", userID).First(&existingUser).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Logger.Warnf("User not found with ID %d for update", userID)
+			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "User not found",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to find CaptiveUser for update in DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	// Request parse
+	var req requests.CaptiveUserRegisterRequest
+	if err := c.BodyParser(&req); err != nil {
+		logger.Logger.WithError(err).Error("Failed to parse UpdateCaptiveUser request")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid input",
+		})
+	}
+	if err := req.Validate(); err != nil {
+		logger.Logger.WithError(err).Error("Validation failed for UpdateCaptiveUser")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Validation error: " + err.Error(),
+		})
+	}
+
+	// Portal (yeni mi, aynı mı?)
+	var portal models.Portal
+	portalID := req.PortalID
+	if portalID == "" {
+		portalID = existingUser.PortalID // eğer request gelmediyse eskisi kalsın
+	}
+
+	if err := db.DB.Where("portal_id = ?", portalID).First(&portal).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Logger.Errorf("Portal not found with ID: %s", portalID)
+			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Portal not found",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to find Portal in database for update")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	var signupComponents []models.PortalComponent
+	if err := json.Unmarshal(portal.SignupComponents, &signupComponents); err != nil {
+		logger.Logger.WithError(err).Error("Failed to unmarshal SignupComponents in update")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Error processing portal components",
+		})
+	}
+
+	// Required alan kontrol
+	requiredFields := make(map[string]bool)
+	for _, comp := range signupComponents {
+		if comp.Required {
+			requiredFields[strings.ToLower(strings.TrimSpace(comp.Label))] = true
+		}
+	}
+	for rf := range requiredFields {
+		if _, exists := req.DynamicFields[rf]; !exists {
+			logger.Logger.Errorf("Missing required field: %s in update", rf)
+			return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: fmt.Sprintf("Missing required field: %s", rf),
+			})
+		}
+	}
+
+	existingUser.PortalID = portalID
+	existingUser.IsOTPVerified = true // yine OTP yok
+
+	var cleartextPassword string
+
+	for key, val := range req.DynamicFields {
+		fieldName := strings.ToLower(strings.TrimSpace(key))
+		switch fieldName {
+		case "first-name":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				existingUser.FirstName = &strVal
+			}
+		case "last-name":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				existingUser.LastName = &strVal
+			}
+		case "tckn":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				existingUser.TCKN = &strVal
+			}
+		case "birth-year":
+			switch typedVal := val.(type) {
+			case float64:
+				y := int(typedVal)
+				existingUser.BirthDate = &y
+			case int:
+				existingUser.BirthDate = &typedVal
+			case string:
+				if y, err := strconv.Atoi(typedVal); err == nil {
+					existingUser.BirthDate = &y
+				}
+			}
+		case "username":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				if strVal != "" {
+					existingUser.Username = &strVal
+				}
+			}
+		case "password":
+			if strVal, ok := val.(string); ok && strVal != "" {
+				cleartextPassword = strVal
+				hashed, err := bcrypt.GenerateFromPassword([]byte(strVal), bcrypt.DefaultCost)
+				if err != nil {
+					logger.Logger.WithError(err).Error("Failed to hash password during update")
+					return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+						Error:   true,
+						Message: "Error processing password",
+					})
+				}
+				hashedStr := string(hashed)
+				existingUser.Password = &hashedStr
+			}
+		case "email":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				existingUser.Email = &strVal
+			}
+		case "phone", "phone-number":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				existingUser.Phone = &strVal
+			}
+		case "nas-name":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				existingUser.NASName = strVal
+			}
+		case "radius-group":
+			if strVal, ok := val.(string); ok {
+				strVal = strings.TrimSpace(strVal)
+				existingUser.RadiusGroup = strVal
+			}
+		default:
+			logger.Logger.Infof("Unhandled field (Update) -> %s: %v", fieldName, val)
+		}
+	}
+
+	existingUser.UpdatedAt = time.Now()
+
+	tx := db.DB.Begin()
+	if tx.Error != nil {
+		logger.Logger.WithError(tx.Error).Error("Failed to begin transaction for UpdateCaptiveUser")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Transaction error",
+		})
+	}
+
+	// Kaydı güncelle
+	if err := tx.Save(&existingUser).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to update CaptiveUser in DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Failed to update user",
+		})
+	}
+
+	// Radius DB'de user eski kayıtlardan temizlenip tekrar eklenir
+	if existingUser.Username != nil && *existingUser.Username != "" {
+		radiusTx := db.RadiusDB.Begin()
+		if radiusTx.Error != nil {
+			tx.Rollback()
+			logger.Logger.WithError(radiusTx.Error).Error("Failed to begin radiusTx in update")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Radius transaction error",
+			})
+		}
+
+		// Eski radcheck kayıtlarını sil
+		if err := radiusTx.Exec("DELETE FROM radcheck WHERE username = ?", *existingUser.Username).Error; err != nil {
+			radiusTx.Rollback()
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to delete radcheck records for update")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to remove old radcheck data",
+			})
+		}
+
+		// Eski radusergroup kayıtlarını sil
+		if err := radiusTx.Exec("DELETE FROM radusergroup WHERE username = ?", *existingUser.Username).Error; err != nil {
+			radiusTx.Rollback()
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to delete radusergroup records for update")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to remove old radusergroup data",
+			})
+		}
+
+		// Yeni radcheck -> Cleartext-Password
+		if cleartextPassword != "" {
+			if err := radiusTx.Exec(
+				"INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'Cleartext-Password', ':=', ?)",
+				*existingUser.Username, cleartextPassword,
+			).Error; err != nil {
+				radiusTx.Rollback()
+				tx.Rollback()
+				logger.Logger.WithError(err).Error("Failed to add new radcheck (password)")
+				return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+					Error:   true,
+					Message: "Failed to add user to Radius authentication",
+				})
+			}
+		}
+
+		// Yeni radcheck -> NAS-IP-Address
+		if existingUser.NASName != "" {
+			if err := radiusTx.Exec(
+				"INSERT INTO radcheck (username, attribute, op, value) VALUES (?, 'NAS-IP-Address', '==', ?)",
+				*existingUser.Username, existingUser.NASName,
+			).Error; err != nil {
+				radiusTx.Rollback()
+				tx.Rollback()
+				logger.Logger.WithError(err).Error("Failed to add new radcheck (NAS-IP-Address)")
+				return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+					Error:   true,
+					Message: "Failed to associate user with NAS in Radius",
+				})
+			}
+		}
+
+		// Yeni radusergroup kaydı
+		if existingUser.RadiusGroup != "" {
+			if err := radiusTx.Exec(
+				"INSERT INTO radusergroup (username, groupname, priority) VALUES (?, ?, 1)",
+				*existingUser.Username, existingUser.RadiusGroup,
+			).Error; err != nil {
+				radiusTx.Rollback()
+				tx.Rollback()
+				logger.Logger.WithError(err).Error("Failed to add user to radusergroup after update")
+				return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+					Error:   true,
+					Message: "Failed to assign user to Radius group",
+				})
+			}
+		}
+
+		if err := radiusTx.Commit().Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to commit radiusTx in update")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to commit radius transaction",
+			})
+		}
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		logger.Logger.WithError(err).Error("Failed to commit transaction for UpdateCaptiveUser")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Transaction commit error",
+		})
+	}
+
+	logger.Logger.Infof("CaptiveUser with ID %d updated successfully", existingUser.ID)
+
+	return c.JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "User updated successfully",
+		Data:    existingUser,
+	})
+}
+
+func DeleteCaptiveUser(c *fiber.Ctx) error {
+	idParam := c.Params("id")
+	if idParam == "" {
+		logger.Logger.Error("Missing user ID param in DeleteCaptiveUser")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "User ID parameter is required",
+		})
+	}
+
+	userID, err := strconv.Atoi(idParam)
+	if err != nil {
+		logger.Logger.WithError(err).Error("Invalid user ID param in DeleteCaptiveUser")
+		return c.Status(http.StatusBadRequest).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Invalid user ID",
+		})
+	}
+
+	var user models.CaptiveUser
+	if err := db.DB.Where("id = ?", userID).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Logger.Warnf("User not found with ID: %d for delete", userID)
+			return c.Status(http.StatusNotFound).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "User not found",
+			})
+		}
+		logger.Logger.WithError(err).Error("Failed to find CaptiveUser for delete in DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred",
+		})
+	}
+
+	tx := db.DB.Begin()
+	if tx.Error != nil {
+		logger.Logger.WithError(tx.Error).Error("Failed to begin transaction for DeleteCaptiveUser")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Transaction error",
+		})
+	}
+
+	// CaptiveUser tablosundan sil
+	if err := tx.Delete(&user).Error; err != nil {
+		tx.Rollback()
+		logger.Logger.WithError(err).Error("Failed to delete CaptiveUser in DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Failed to delete user",
+		})
+	}
+
+	// Radius DB den de sil
+	if user.Username != nil && *user.Username != "" {
+		radiusTx := db.RadiusDB.Begin()
+		if radiusTx.Error != nil {
+			tx.Rollback()
+			logger.Logger.WithError(radiusTx.Error).Error("Failed to begin radiusTx in delete")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Radius transaction error",
+			})
+		}
+
+		// radcheck sil
+		if err := radiusTx.Exec("DELETE FROM radcheck WHERE username = ?", *user.Username).Error; err != nil {
+			radiusTx.Rollback()
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to delete radcheck on user delete")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to remove user from radcheck",
+			})
+		}
+
+		// radusergroup sil
+		if err := radiusTx.Exec("DELETE FROM radusergroup WHERE username = ?", *user.Username).Error; err != nil {
+			radiusTx.Rollback()
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to delete radusergroup on user delete")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to remove user from radusergroup",
+			})
+		}
+
+		if err := radiusTx.Commit().Error; err != nil {
+			tx.Rollback()
+			logger.Logger.WithError(err).Error("Failed to commit radiusTx in delete")
+			return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+				Error:   true,
+				Message: "Failed to commit radius transaction",
+			})
+		}
+	}
+
+	if err := tx.Commit().Error; err != nil {
+		logger.Logger.WithError(err).Error("Failed to commit transaction for DeleteCaptiveUser")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Transaction commit error",
+		})
+	}
+
+	logger.Logger.Infof("CaptiveUser with ID %d deleted successfully", user.ID)
+
+	return c.JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "User deleted successfully",
+		Data: map[string]interface{}{
+			"user_id": user.ID,
+		},
+	})
+}
+
+func GetAllCaptiveUsers(c *fiber.Ctx) error {
+	var users []models.CaptiveUser
+
+	// DB'den tüm kullanıcıları çekelim
+	if err := db.DB.Find(&users).Error; err != nil {
+		logger.Logger.WithError(err).Error("Failed to fetch all CaptiveUsers from DB")
+		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
+			Error:   true,
+			Message: "Unexpected error occurred while fetching users",
+		})
+	}
+
+	return c.JSON(responses.SuccessResponse{
+		Error:   false,
+		Message: "All users retrieved successfully",
+		Data:    users,
 	})
 }
