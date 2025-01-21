@@ -310,10 +310,8 @@ func LoginCaptiveUser(c *fiber.Ctx) error {
 		})
 	}
 
-	// Normalde FortiGate'e HTTP Post atılabilir. (formData vs...)
 	logger.Logger.Infof("FortiGate authentication succeeded for user: %s", *user.Username)
 
-	// 20. Başarılı yanıt
 	return c.JSON(responses.SuccessResponse{
 		Error:   false,
 		Message: "Login successful (no OTP required)",

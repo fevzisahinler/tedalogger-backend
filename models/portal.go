@@ -14,9 +14,9 @@ type Portal struct {
 	Name             string         `gorm:"not null;unique" json:"name"`
 	RadiusGroupName  string         `json:"radiusGroupName"`
 	NasName          string         `json:"nasName"`
-	LoginComponents  datatypes.JSON `json:"loginComponents"`  // JSON format
-	SignupComponents datatypes.JSON `json:"signupComponents"` // JSON format
-	Theme            datatypes.JSON `json:"theme"`            // JSON format
+	LoginComponents  datatypes.JSON `json:"loginComponents"`
+	SignupComponents datatypes.JSON `json:"signupComponents"`
+	Theme            datatypes.JSON `json:"theme"`
 	Logo             string         `json:"logo,omitempty"`
 	Background       string         `json:"background,omitempty"`
 	OtpEnabled       bool           `gorm:"default:false" json:"otpEnabled"`
@@ -25,7 +25,7 @@ type Portal struct {
 }
 
 type PortalComponent struct {
-	ID           string   `json:"id"` // UUID
+	ID           string   `json:"id"`
 	Type         string   `json:"type"`
 	Label        string   `json:"label"`
 	Placeholder  string   `json:"placeholder,omitempty"`

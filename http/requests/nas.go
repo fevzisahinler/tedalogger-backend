@@ -8,6 +8,7 @@ type CreateOrUpdateNASRequest struct {
 	Nasname           string `json:"nasname" validate:"required"`
 	Shortname         string `json:"shortname"`
 	Type              string `json:"type"`
+	Brand             string `json:"brand"`
 	Port              int    `json:"port" validate:"required,numeric"`
 	Secret            string `json:"secret" validate:"required"`
 	Server            string `json:"server"`

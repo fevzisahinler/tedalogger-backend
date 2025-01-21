@@ -9,6 +9,7 @@ type NAS struct {
 	Nasname           string    `gorm:"not null" json:"nasname"`
 	Shortname         string    `json:"shortname"`
 	Type              string    `json:"type"`
+	Brand             string    `json:"brand"`
 	Port              int       `json:"port"`
 	Secret            string    `gorm:"not null" json:"secret"`
 	Server            string    `json:"server"`

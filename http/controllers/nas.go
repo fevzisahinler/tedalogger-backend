@@ -37,6 +37,7 @@ func CreateNAS(c *fiber.Ctx) error {
 		Nasname:           req.Nasname,
 		Shortname:         req.Shortname,
 		Type:              req.Type,
+		Brand:             req.Brand,
 		Port:              req.Port,
 		Secret:            req.Secret,
 		Server:            req.Server,
@@ -46,7 +47,6 @@ func CreateNAS(c *fiber.Ctx) error {
 		Syslog5651Enabled: req.Syslog5651Enabled,
 	}
 
-	// Insert into PostgreSQL
 	if err := db.DB.Create(&nas).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to insert NAS into PostgreSQL")
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
@@ -55,14 +55,12 @@ func CreateNAS(c *fiber.Ctx) error {
 		})
 	}
 
-	// Insert into Radius DB (ports column in radius)
 	if err := db.RadiusDB.Exec(
 		`INSERT INTO nas (nasname, shortname, type, ports, secret, server, community, description)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		nas.Nasname, nas.Shortname, nas.Type, nas.Port, nas.Secret, nas.Server, nas.Community, nas.Description,
 	).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to insert NAS into Radius DB")
-		// Rollback in PostgreSQL if Radius insert fails
 		db.DB.Delete(&nas)
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
 			Error:   true,
@@ -123,6 +121,7 @@ func UpdateNAS(c *fiber.Ctx) error {
 	nas.Nasname = req.Nasname
 	nas.Shortname = req.Shortname
 	nas.Type = req.Type
+	nas.Brand = req.Brand
 	nas.Port = req.Port
 	nas.Secret = req.Secret
 	nas.Server = req.Server
@@ -139,7 +138,6 @@ func UpdateNAS(c *fiber.Ctx) error {
 		})
 	}
 
-	// Update in Radius DB
 	if err := db.RadiusDB.Exec(
 		`UPDATE nas SET nasname=?, shortname=?, type=?, ports=?, secret=?, server=?, community=?, description=? 
 		 WHERE nasname=?`,
@@ -193,7 +191,6 @@ func DeleteNAS(c *fiber.Ctx) error {
 
 	if err := db.RadiusDB.Exec(`DELETE FROM nas WHERE nasname=?`, nas.Nasname).Error; err != nil {
 		logger.Logger.WithError(err).Error("Failed to delete NAS from Radius DB")
-		// For simplicity, skipping rollback here.
 		return c.Status(http.StatusInternalServerError).JSON(responses.ErrorResponse{
 			Error:   true,
 			Message: "Could not delete NAS in radius",
